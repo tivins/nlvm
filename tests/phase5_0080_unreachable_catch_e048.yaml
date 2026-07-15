@@ -1,0 +1,22 @@
+---
+title: "Compile E048 — two catch clauses for the exact same exception type"
+file_separator: "#NLFILE"
+expected_compile_error: "E048"
+---
+
+#NLFILE phase5/e048_dup/Main.nl
+namespace phase5.e048_dup;
+class Main {
+	public static int main(string[] args) {
+		try {
+			throw new ArithmeticException("boom");
+		}
+		catch (ArithmeticException ex) {
+			// first
+		}
+		catch (ArithmeticException ex) {
+			// unreachable: same type already caught above
+		}
+		return 0;
+	}
+}

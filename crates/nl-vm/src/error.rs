@@ -10,12 +10,14 @@ pub enum VmError {
     MethodNotFound(String),
     #[error("no 'main' method in module")]
     NoMain,
-    #[error("ArithmeticException: division by zero")]
-    DivisionByZero,
-    #[error("NullPointerException")]
-    NullPointer,
-    #[error("IndexOutOfBoundsException: index {index}, length {length}")]
-    IndexOutOfBounds { index: i64, length: usize },
+    /// An exception object propagating up the call stack — vm.md § Throw
+    /// and stack unwinding. Carries the `Value::Object` itself (its
+    /// `class_name`/`message` field) so `run_frame` can match it against
+    /// each frame's exception table and, if unhandled anywhere, `run_program`
+    /// can report it. Explicit `throw` and implicit exceptions (division by
+    /// zero, null dereference, out-of-bounds access) both produce this.
+    #[error("unhandled exception: {0:?}")]
+    Thrown(crate::value::Value),
     #[error("unsupported opcode in this milestone: {0}")]
     Unsupported(String),
     #[error("malformed bytecode: {0}")]

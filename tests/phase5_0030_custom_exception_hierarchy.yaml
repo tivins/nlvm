@@ -1,0 +1,44 @@
+---
+title: "custom exception extends Exception, super(message), custom field read from catch"
+file_separator: "#NLFILE"
+expected_exit_code: 42
+expected_stdout: ""
+---
+
+#NLFILE phase5/custom_exception/MyException.nl
+namespace phase5.custom_exception;
+class MyException extends Exception {
+	public int customField;
+	public construct(string message, int customField) {
+		super(message);
+		this.customField = customField;
+	}
+}
+
+#NLFILE phase5/custom_exception/Risky.nl
+namespace phase5.custom_exception;
+use phase5.custom_exception.MyException;
+class Risky {
+	public construct() {}
+	public void doSomethingRisky() {
+		throw new MyException("nope", 42);
+	}
+}
+
+#NLFILE phase5/custom_exception/Main.nl
+namespace phase5.custom_exception;
+use phase5.custom_exception.MyException;
+use phase5.custom_exception.Risky;
+class Main {
+	public static int main(string[] args) {
+		Risky r = new Risky();
+		int result = 0;
+		try {
+			r.doSomethingRisky();
+		}
+		catch (MyException ex) {
+			result = ex.customField;
+		}
+		return result;
+	}
+}

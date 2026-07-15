@@ -43,7 +43,16 @@ pub fn call_instance(
     run_frame(program, module, method, locals)
 }
 
-#[allow(unused_assignments)] // GOTO/GOTO_W always overwrite `pc` right after reading their operand
+/// One instruction's outcome — `exec_step` executes exactly one opcode so
+/// `run_frame`'s loop can intercept a `VmError::Thrown` between
+/// instructions and consult `method.exception_table` before either
+/// resuming at a handler or propagating the exception to the caller (vm.md
+/// § Throw and stack unwinding).
+enum Step {
+    Continue,
+    Return(Option<Value>),
+}
+
 fn run_frame(
     program: &Program,
     module: &Module,
@@ -59,9 +68,40 @@ fn run_frame(
             return Ok(None);
         }
         let opcode_pc = pc;
-        let byte = code[pc];
-        pc += 1;
-        let op = Opcode::from_u8(byte).ok_or(VmError::UnknownOpcode(byte))?;
+        match exec_step(program, module, &mut locals, &mut stack, code, &mut pc) {
+            Ok(Step::Continue) => {}
+            Ok(Step::Return(v)) => return Ok(v),
+            Err(VmError::Thrown(exc)) => match find_handler(program, module, method, opcode_pc, &exc) {
+                Some(handler_pc) => {
+                    stack.clear();
+                    stack.push(exc);
+                    pc = handler_pc;
+                }
+                None => return Err(VmError::Thrown(exc)),
+            },
+            Err(other) => return Err(other),
+        }
+    }
+}
+
+/// Executes a single opcode. On `Err(VmError::Thrown(_))`, `run_frame`
+/// searches `method.exception_table` using the *pre-instruction* pc (the
+/// position of the opcode that raised it, whether via `THROW` or an
+/// implicit exception) — see the `match` below in `run_frame`.
+#[allow(unused_assignments)] // GOTO/GOTO_W always overwrite `pc` right after reading their operand
+fn exec_step(
+    program: &Program,
+    module: &Module,
+    locals: &mut [Value],
+    stack: &mut Vec<Value>,
+    code: &[u8],
+    pc_ref: &mut usize,
+) -> Result<Step, VmError> {
+    let opcode_pc = *pc_ref;
+    let mut pc = opcode_pc;
+    let byte = code[pc];
+    pc += 1;
+    let op = Opcode::from_u8(byte).ok_or(VmError::UnknownOpcode(byte))?;
 
         macro_rules! read_u8 {
             () => {{
@@ -163,25 +203,25 @@ fn run_frame(
             Opcode::Store2 => locals[2] = stack.pop().ok_or(VmError::Malformed("stack underflow"))?,
             Opcode::Store3 => locals[3] = stack.pop().ok_or(VmError::Malformed("stack underflow"))?,
 
-            Opcode::IAdd => int_binop(&mut stack, |a, b| Ok(a.wrapping_add(b)))?,
-            Opcode::ISub => int_binop(&mut stack, |a, b| Ok(a.wrapping_sub(b)))?,
-            Opcode::IMul => int_binop(&mut stack, |a, b| Ok(a.wrapping_mul(b)))?,
-            Opcode::IDiv => int_binop(&mut stack, |a, b| {
+            Opcode::IAdd => int_binop(stack, |a, b| Ok(a.wrapping_add(b)))?,
+            Opcode::ISub => int_binop(stack, |a, b| Ok(a.wrapping_sub(b)))?,
+            Opcode::IMul => int_binop(stack, |a, b| Ok(a.wrapping_mul(b)))?,
+            Opcode::IDiv => int_binop(stack, |a, b| {
                 if b == 0 {
-                    Err(VmError::DivisionByZero)
+                    Err(throw_native("ArithmeticException", "division by zero"))
                 } else {
                     Ok(a.wrapping_div(b))
                 }
             })?,
-            Opcode::IMod => int_binop(&mut stack, |a, b| {
+            Opcode::IMod => int_binop(stack, |a, b| {
                 if b == 0 {
-                    Err(VmError::DivisionByZero)
+                    Err(throw_native("ArithmeticException", "division by zero"))
                 } else {
                     Ok(a.wrapping_rem(b))
                 }
             })?,
             Opcode::INeg => {
-                let a = pop_int(&mut stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::Int(a.wrapping_neg()));
             }
             Opcode::IInc => {
@@ -193,22 +233,22 @@ fn run_frame(
                 locals[idx as usize] = Value::Int(cur.wrapping_add(delta as i64));
             }
 
-            Opcode::FAdd => float_binop(&mut stack, |a, b| a + b)?,
-            Opcode::FSub => float_binop(&mut stack, |a, b| a - b)?,
-            Opcode::FMul => float_binop(&mut stack, |a, b| a * b)?,
-            Opcode::FDiv => float_binop(&mut stack, |a, b| a / b)?,
-            Opcode::FMod => float_binop(&mut stack, |a, b| a % b)?,
+            Opcode::FAdd => float_binop(stack, |a, b| a + b)?,
+            Opcode::FSub => float_binop(stack, |a, b| a - b)?,
+            Opcode::FMul => float_binop(stack, |a, b| a * b)?,
+            Opcode::FDiv => float_binop(stack, |a, b| a / b)?,
+            Opcode::FMod => float_binop(stack, |a, b| a % b)?,
             Opcode::FNeg => {
-                let a = pop_float(&mut stack)?;
+                let a = pop_float(stack)?;
                 stack.push(Value::Float(-a));
             }
 
             Opcode::I2F => {
-                let a = pop_int(&mut stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::Float(a as f64));
             }
             Opcode::F2I => {
-                let a = pop_float(&mut stack)?;
+                let a = pop_float(stack)?;
                 let clamped = if a.is_nan() {
                     0
                 } else {
@@ -217,7 +257,7 @@ fn run_frame(
                 stack.push(Value::Int(clamped));
             }
             Opcode::I2B => {
-                let a = pop_int(&mut stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::Byte((a & 0xFF) as u8));
             }
             Opcode::B2I => {
@@ -231,37 +271,37 @@ fn run_frame(
             Opcode::ToString => {
                 let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
                 if v.is_null() {
-                    return Err(VmError::NullPointer);
+                    return Err(throw_native("NullPointerException", "null pointer dereference"));
                 }
                 stack.push(Value::Str(Rc::new(v.to_display_string())));
             }
 
             Opcode::CmpEq => {
-                let (a, b) = pop2(&mut stack)?;
+                let (a, b) = pop2(stack)?;
                 stack.push(Value::Bool(values_equal(&a, &b)));
             }
             Opcode::CmpNe => {
-                let (a, b) = pop2(&mut stack)?;
+                let (a, b) = pop2(stack)?;
                 stack.push(Value::Bool(!values_equal(&a, &b)));
             }
             Opcode::CmpLt => {
-                let ord = compare(&mut stack)?;
+                let ord = compare(stack)?;
                 stack.push(Value::Bool(ord == std::cmp::Ordering::Less));
             }
             Opcode::CmpGt => {
-                let ord = compare(&mut stack)?;
+                let ord = compare(stack)?;
                 stack.push(Value::Bool(ord == std::cmp::Ordering::Greater));
             }
             Opcode::CmpLe => {
-                let ord = compare(&mut stack)?;
+                let ord = compare(stack)?;
                 stack.push(Value::Bool(ord != std::cmp::Ordering::Greater));
             }
             Opcode::CmpGe => {
-                let ord = compare(&mut stack)?;
+                let ord = compare(stack)?;
                 stack.push(Value::Bool(ord != std::cmp::Ordering::Less));
             }
             Opcode::CmpThreeWay => {
-                let ord = compare(&mut stack)?;
+                let ord = compare(stack)?;
                 stack.push(Value::Int(match ord {
                     std::cmp::Ordering::Less => -1,
                     std::cmp::Ordering::Equal => 0,
@@ -277,20 +317,20 @@ fn run_frame(
                 stack.push(Value::Bool(!v.is_null()));
             }
             Opcode::Not => {
-                let v = pop_bool(&mut stack)?;
+                let v = pop_bool(stack)?;
                 stack.push(Value::Bool(!v));
             }
 
             Opcode::IfTrue => {
                 let offset = read_i16!();
-                let v = pop_bool(&mut stack)?;
+                let v = pop_bool(stack)?;
                 if v {
                     pc = (opcode_pc as i64 + offset as i64) as usize;
                 }
             }
             Opcode::IfFalse => {
                 let offset = read_i16!();
-                let v = pop_bool(&mut stack)?;
+                let v = pop_bool(stack)?;
                 if !v {
                     pc = (opcode_pc as i64 + offset as i64) as usize;
                 }
@@ -308,21 +348,34 @@ fn run_frame(
             Opcode::New => {
                 let class_index = read_u16!();
                 let fqcn = resolve_class_name(module, class_index)?.to_string();
-                let target_module = program
-                    .get(&fqcn)
-                    .ok_or_else(|| VmError::MethodNotFound(fqcn.clone()))?;
-                let mut fields = HashMap::with_capacity(target_module.fields.len());
-                for f in &target_module.fields {
-                    let name = target_module
+                // Fields are collected across the whole `extends` chain (a
+                // subclass's own fields, if any, take precedence over a
+                // same-named ancestor field) so an inherited field like
+                // `Exception.message` is present on every subclass instance.
+                let mut fields = HashMap::new();
+                let mut current = fqcn.clone();
+                loop {
+                    let m = program.get(&current).ok_or_else(|| VmError::MethodNotFound(current.clone()))?;
+                    for f in &m.fields {
+                        let name = m
+                            .constant_pool
+                            .utf8_at(f.name_index)
+                            .ok_or(VmError::Malformed("bad field name index"))?
+                            .to_string();
+                        let type_desc = m
+                            .constant_pool
+                            .type_desc_at(f.type_index)
+                            .ok_or(VmError::Malformed("bad field type index"))?;
+                        fields.entry(name).or_insert_with(|| default_value_for(type_desc));
+                    }
+                    if m.super_class == 0 {
+                        break;
+                    }
+                    current = m
                         .constant_pool
-                        .utf8_at(f.name_index)
-                        .ok_or(VmError::Malformed("bad field name index"))?
+                        .class_name_at(m.super_class)
+                        .ok_or(VmError::Malformed("bad super_class index"))?
                         .to_string();
-                    let type_desc = target_module
-                        .constant_pool
-                        .type_desc_at(f.type_index)
-                        .ok_or(VmError::Malformed("bad field type index"))?;
-                    fields.insert(name, default_value_for(type_desc));
                 }
                 stack.push(Value::Object(Rc::new(RefCell::new(Object {
                     class_name: fqcn,
@@ -336,7 +389,7 @@ fn run_frame(
                 let result = match &v {
                     Value::Object(obj) => {
                         let runtime_class = obj.borrow().class_name.clone();
-                        runtime_class == target_fqcn || implements_interface(program, &runtime_class, target_fqcn)
+                        is_instance_of(program, runtime_class, target_fqcn)
                     }
                     _ => false,
                 };
@@ -350,7 +403,7 @@ fn run_frame(
                 let type_index = read_u16!();
                 let elem_desc = module.constant_pool.type_desc_at(type_index).unwrap_or("");
                 let default = default_value_for(elem_desc);
-                let size = pop_int(&mut stack)?;
+                let size = pop_int(stack)?;
                 if size < 0 {
                     return Err(VmError::Malformed("negative array size"));
                 }
@@ -360,14 +413,14 @@ fn run_frame(
                 return Err(VmError::Unsupported(format!("{op:?} lands in a later phase")));
             }
             Opcode::ArrayLoad => {
-                let (arr, idx) = pop2(&mut stack)?;
+                let (arr, idx) = pop2(stack)?;
                 let Value::Array(arr) = arr else {
                     return Err(VmError::Malformed("ARRAY_LOAD on non-array"));
                 };
                 let idx = idx.as_int().ok_or(VmError::Malformed("array index must be int"))?;
                 let arr_ref = arr.borrow();
                 if idx < 0 || idx as usize >= arr_ref.len() {
-                    return Err(VmError::IndexOutOfBounds { index: idx, length: arr_ref.len() });
+                    return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", arr_ref.len())));
                 }
                 stack.push(arr_ref[idx as usize].clone());
             }
@@ -381,7 +434,7 @@ fn run_frame(
                 let idx = idx.as_int().ok_or(VmError::Malformed("array index must be int"))?;
                 let mut arr_mut = arr.borrow_mut();
                 if idx < 0 || idx as usize >= arr_mut.len() {
-                    return Err(VmError::IndexOutOfBounds { index: idx, length: arr_mut.len() });
+                    return Err(throw_native("IndexOutOfBoundsException", format!("index {idx}, length {}", arr_mut.len())));
                 }
                 arr_mut[idx as usize] = value;
             }
@@ -398,7 +451,7 @@ fn run_frame(
                 let (_, field_name, _) = resolve_field_ref(module, idx)?;
                 let receiver = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
                 if receiver.is_null() {
-                    return Err(VmError::NullPointer);
+                    return Err(throw_native("NullPointerException", "null pointer dereference"));
                 }
                 let Value::Object(obj) = receiver else {
                     return Err(VmError::Malformed("GET_FIELD on non-object"));
@@ -412,7 +465,7 @@ fn run_frame(
                 let value = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
                 let receiver = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
                 if receiver.is_null() {
-                    return Err(VmError::NullPointer);
+                    return Err(throw_native("NullPointerException", "null pointer dereference"));
                 }
                 let Value::Object(obj) = receiver else {
                     return Err(VmError::Malformed("SET_FIELD on non-object"));
@@ -451,7 +504,7 @@ fn run_frame(
                 let call_args = stack.split_off(stack.len() - param_count);
                 let receiver = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
                 if receiver.is_null() {
-                    return Err(VmError::NullPointer);
+                    return Err(throw_native("NullPointerException", "null pointer dereference"));
                 }
                 // Virtual dispatch: resolve against the receiver's *runtime*
                 // class, not the static type recorded in the method ref —
@@ -460,11 +513,10 @@ fn run_frame(
                     return Err(VmError::Malformed("INVOKE_INSTANCE on non-object"));
                 };
                 let runtime_class = obj.borrow().class_name.clone();
-                let target_module = program
-                    .get(&runtime_class)
-                    .ok_or_else(|| VmError::MethodNotFound(format!("{runtime_class}.{name}")))?;
-                let target = target_module
-                    .find_method_by_descriptor(&name, &descriptor)
+                // Not necessarily declared on `runtime_class` itself — walk
+                // the `extends` chain for an inherited-but-not-overridden
+                // method (vm.md § Method dispatch, Instance methods).
+                let (target_module, target) = resolve_virtual(program, &runtime_class, &name, &descriptor)
                     .ok_or_else(|| VmError::MethodNotFound(format!("{runtime_class}.{name}")))?;
                 if let Some(result) = call_instance(program, target_module, target, receiver, call_args)? {
                     stack.push(result);
@@ -480,15 +532,15 @@ fn run_frame(
                 let call_args = stack.split_off(stack.len() - param_count);
                 let receiver = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
                 if receiver.is_null() {
-                    return Err(VmError::NullPointer);
+                    return Err(throw_native("NullPointerException", "null pointer dereference"));
                 }
                 // No virtual dispatch: always the exact class named in the
-                // ref (constructors, `super`/private calls in later phases).
-                let target_module = program
-                    .get(&class_fqcn)
-                    .ok_or_else(|| VmError::MethodNotFound(format!("{class_fqcn}.{name}")))?;
-                let target = target_module
-                    .find_method_by_descriptor(&name, &descriptor)
+                // ref (constructors, `super.method(...)`) — but that class
+                // may itself only *inherit* the method (e.g. `super(...)`
+                // delegating to a grandparent constructor's class), so this
+                // still walks the chain starting at `class_fqcn` rather than
+                // requiring an exact match there.
+                let (target_module, target) = resolve_virtual(program, &class_fqcn, &name, &descriptor)
                     .ok_or_else(|| VmError::MethodNotFound(format!("{class_fqcn}.{name}")))?;
                 if let Some(result) = call_instance(program, target_module, target, receiver, call_args)? {
                     stack.push(result);
@@ -496,16 +548,24 @@ fn run_frame(
             }
 
             Opcode::StrConcat => {
-                let (a, b) = pop2(&mut stack)?;
+                let (a, b) = pop2(stack)?;
                 let sa = as_string(&a)?;
                 let sb = as_string(&b)?;
                 stack.push(Value::Str(Rc::new(format!("{sa}{sb}"))));
             }
 
-            Opcode::Return => return Ok(None),
+            Opcode::Return => return Ok(Step::Return(None)),
             Opcode::ReturnValue => {
                 let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
-                return Ok(Some(v));
+                return Ok(Step::Return(Some(v)));
+            }
+
+            Opcode::Throw => {
+                let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                if v.is_null() {
+                    return Err(throw_native("NullPointerException", "cannot throw null"));
+                }
+                return Err(VmError::Thrown(v));
             }
 
             other => {
@@ -514,7 +574,8 @@ fn run_frame(
                 )))
             }
         }
-    }
+    *pc_ref = pc;
+    Ok(Step::Continue)
 }
 
 fn resolve_class_name(module: &Module, idx: u16) -> Result<&str, VmError> {
@@ -591,6 +652,92 @@ fn implements_interface(program: &Program, class_fqcn: &str, target_fqcn: &str) 
         .interfaces
         .iter()
         .any(|&i| module.constant_pool.class_name_at(i) == Some(target_fqcn))
+}
+
+/// `instanceof`/exception-catch-type test: is `current` (or, transitively,
+/// any of its `extends` ancestors) equal to `target_fqcn`, or does one of
+/// them `implements` it? — vm.md § Object operations, § Exception table.
+fn is_instance_of(program: &Program, mut current: String, target_fqcn: &str) -> bool {
+    loop {
+        if current == target_fqcn || implements_interface(program, &current, target_fqcn) {
+            return true;
+        }
+        let Some(module) = program.get(&current) else {
+            return false;
+        };
+        if module.super_class == 0 {
+            return false;
+        }
+        match module.constant_pool.class_name_at(module.super_class) {
+            Some(parent) => current = parent.to_string(),
+            None => return false,
+        }
+    }
+}
+
+/// Builds a native `Value::Object` for a VM-raised exception (division by
+/// zero, null dereference, out-of-bounds access, `throw null`) without going
+/// through the class's actual constructor — vm.md § Exception table lists
+/// these as VM-thrown directly. Only sets `message`; the full `Exception`
+/// hierarchy's other fields (e.g. a captured stack trace) are not populated
+/// this phase (see nl_syntax::prelude).
+fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
+    let mut fields = HashMap::new();
+    fields.insert("message".to_string(), Value::Str(Rc::new(message.into())));
+    VmError::Thrown(Value::Object(Rc::new(RefCell::new(Object {
+        class_name: class_name.to_string(),
+        fields,
+    }))))
+}
+
+/// Searches `method`'s exception table for an entry whose protected range
+/// covers `opcode_pc` and whose `catch_type` matches `exc`'s runtime class
+/// (or is `0`, catch-all/`finally`) — vm.md § Throw and stack unwinding,
+/// steps 2-3. Entries are already in specificity order (nl-codegen emits
+/// per-`catch` entries before a trailing `finally` catch-all).
+fn find_handler(program: &Program, module: &Module, method: &MethodDescriptor, opcode_pc: usize, exc: &Value) -> Option<usize> {
+    let Value::Object(obj) = exc else {
+        return None;
+    };
+    let exc_class = obj.borrow().class_name.clone();
+    for entry in &method.exception_table {
+        if (entry.start_pc as usize) > opcode_pc || opcode_pc >= (entry.end_pc as usize) {
+            continue;
+        }
+        if entry.catch_type == 0 {
+            return Some(entry.handler_pc as usize);
+        }
+        if let Some(catch_fqcn) = module.constant_pool.class_name_at(entry.catch_type) {
+            if is_instance_of(program, exc_class.clone(), catch_fqcn) {
+                return Some(entry.handler_pc as usize);
+            }
+        }
+    }
+    None
+}
+
+/// Resolves an instance method call starting from `start_fqcn`, walking the
+/// `extends` chain when the method isn't declared directly on that class
+/// (an inherited-but-not-overridden method) — used by both `INVOKE_INSTANCE`
+/// (`start_fqcn` = the receiver's runtime class) and `INVOKE_SPECIAL`
+/// (`start_fqcn` = the exact class named in the method ref).
+fn resolve_virtual<'m>(
+    program: &'m Program,
+    start_fqcn: &str,
+    name: &str,
+    descriptor: &str,
+) -> Option<(&'m Module, &'m MethodDescriptor)> {
+    let mut current = start_fqcn.to_string();
+    loop {
+        let module = program.get(&current)?;
+        if let Some(target) = module.find_method_by_descriptor(name, descriptor) {
+            return Some((module, target));
+        }
+        if module.super_class == 0 {
+            return None;
+        }
+        current = module.constant_pool.class_name_at(module.super_class)?.to_string();
+    }
 }
 
 fn count_params(descriptor: &str) -> usize {

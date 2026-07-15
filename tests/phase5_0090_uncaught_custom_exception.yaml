@@ -1,0 +1,24 @@
+---
+title: "uncaught custom exception surfaces its class name and message on stderr"
+file_separator: "#NLFILE"
+expected_exit_code: 1
+expected_stdout: ""
+expected_stderr: "Unhandled exception: phase5.uncaught.MyException: nope"
+---
+
+#NLFILE phase5/uncaught/MyException.nl
+namespace phase5.uncaught;
+class MyException extends Exception {
+	public construct(string message) {
+		super(message);
+	}
+}
+
+#NLFILE phase5/uncaught/Main.nl
+namespace phase5.uncaught;
+use phase5.uncaught.MyException;
+class Main {
+	public static int main(string[] args) {
+		throw new MyException("nope");
+	}
+}

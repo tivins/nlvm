@@ -1,5 +1,5 @@
-use nl_bytecode::Opcode;
-use nl_syntax::ast::{Block, Stmt};
+use nl_bytecode::{ExceptionTableEntry, Opcode};
+use nl_syntax::ast::{Block, CatchClause, Stmt, Type};
 
 use crate::class_table::resolve_type;
 use crate::error::CodegenError;
@@ -52,6 +52,14 @@ impl<'a> Emitter<'a> {
             Stmt::ThisCall(args) => {
                 self.compile_this_call(args)?;
             }
+            Stmt::SuperCall(args) => {
+                self.compile_super_call(args)?;
+            }
+            Stmt::Throw(expr) => {
+                self.compile_expr(expr)?;
+                self.op(Opcode::Throw, -1);
+            }
+            Stmt::Try { body, catches, finally } => self.compile_try(body, catches, finally)?,
             Stmt::If {
                 cond,
                 then_branch,
@@ -79,6 +87,86 @@ impl<'a> Emitter<'a> {
                 self.loops.last_mut().unwrap().continue_patches.push(patch);
             }
             Stmt::Block(block) => self.compile_block(block)?,
+        }
+        Ok(())
+    }
+
+    /// `try { ... } catch (T1 a) { ... } catch (T2 b) { ... } finally { ... }`
+    /// — vm.md § Exception handling. Per-catch exception-table entries cover
+    /// the `try` body only (declaration order = table order = specificity
+    /// order, matching E048's reachability rule already enforced by
+    /// nl-sema); a `finally`, if present, gets a catch-all (`catch_type =
+    /// 0`) entry covering the body *and* every catch handler, plus a second
+    /// copy of its code inline on the normal-completion path.
+    ///
+    /// Known gap versus the spec (documented, not implemented this phase):
+    /// `return`/`break`/`continue` inside a `try`/`catch` jump straight out
+    /// without running an enclosing `finally` — the spec requires
+    /// duplicating `finally` at every such exit point, which is deferred.
+    fn compile_try(&mut self, body: &Block, catches: &[CatchClause], finally: &Option<Block>) -> Result<(), CodegenError> {
+        let try_start = self.code.len();
+        self.compile_block(body)?;
+        let try_end = self.code.len();
+        let mut end_patches = vec![self.branch(Opcode::Goto, 0)];
+
+        let mut catch_entries = Vec::with_capacity(catches.len());
+        for catch in catches {
+            let handler_pc = self.code.len();
+            let fqcn = self.resolve_class_name(&catch.ty);
+            let catch_type = self.cp.add_class(&fqcn);
+            self.push_scope();
+            let local = self.declare_local(catch.var.clone(), expr_ty_of(&Type::Named(fqcn)));
+            // The VM clears the operand stack and pushes the caught
+            // exception before jumping here (vm.md § Throw and stack
+            // unwinding) — store it into the catch parameter.
+            self.emit_store(local);
+            for stmt in &catch.body {
+                self.compile_stmt(stmt)?;
+            }
+            self.pop_scope();
+            end_patches.push(self.branch(Opcode::Goto, 0));
+            catch_entries.push((handler_pc, catch_type));
+        }
+        let catches_end = self.code.len();
+
+        let finally_handler_pc = if let Some(finally_body) = finally {
+            let handler_pc = self.code.len();
+            let exc_local = self.declare_scratch_local(expr_ty_of(&Type::Named("Exception".to_string())));
+            self.emit_store(exc_local);
+            self.compile_block(finally_body)?;
+            self.op_u16(Opcode::Load, exc_local, 1);
+            self.op(Opcode::Throw, -1);
+            Some(handler_pc)
+        } else {
+            None
+        };
+
+        // Normal-completion path: falls through here from the try body or
+        // any catch handler, runs `finally` (a second copy) if present, then
+        // continues after the whole statement.
+        let normal_finally_pc = self.code.len();
+        if let Some(finally_body) = finally {
+            self.compile_block(finally_body)?;
+        }
+        for (pc, operand) in end_patches {
+            self.patch_branch_to(pc, operand, normal_finally_pc);
+        }
+
+        for (handler_pc, catch_type) in catch_entries {
+            self.exception_table.push(ExceptionTableEntry {
+                start_pc: try_start as u16,
+                end_pc: try_end as u16,
+                handler_pc: handler_pc as u16,
+                catch_type,
+            });
+        }
+        if let Some(handler_pc) = finally_handler_pc {
+            self.exception_table.push(ExceptionTableEntry {
+                start_pc: try_start as u16,
+                end_pc: catches_end as u16,
+                handler_pc: handler_pc as u16,
+                catch_type: 0,
+            });
         }
         Ok(())
     }

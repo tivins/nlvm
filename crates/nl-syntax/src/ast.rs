@@ -28,6 +28,7 @@ pub enum Visibility {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClassDecl {
     pub name: String,
+    pub extends: Option<String>,
     pub implements: Vec<String>,
     pub fields: Vec<FieldDecl>,
     pub methods: Vec<MethodDecl>,
@@ -75,6 +76,10 @@ pub struct MethodDecl {
     pub is_const: bool,
     pub return_type: Type,
     pub params: Vec<Param>,
+    /// `throws T1, T2, ...` — parsed and carried into bytecode metadata, but
+    /// not yet statically enforced (checked-exception propagation, E016/E017,
+    /// is future work; see PLAN.md Phase 5).
+    pub throws: Vec<String>,
     pub body: Block,
 }
 
@@ -142,6 +147,24 @@ pub enum Stmt {
     /// `this(args);` constructor delegation — must be the first statement of
     /// a constructor body (compiler.md § Constructor delegation, E045).
     ThisCall(Vec<Expr>),
+    /// `super(args);` constructor delegation to the direct superclass — like
+    /// `ThisCall`, must be the first statement of a constructor body.
+    SuperCall(Vec<Expr>),
+    Throw(Expr),
+    Try {
+        body: Block,
+        catches: Vec<CatchClause>,
+        finally: Option<Block>,
+    },
+}
+
+/// One `catch (Type name) { ... }` clause of a `Stmt::Try` — specs.md §
+/// Exception handling.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CatchClause {
+    pub ty: String,
+    pub var: String,
+    pub body: Block,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,6 +198,10 @@ pub enum Expr {
     StringLit(String),
     NullLit,
     This,
+    /// `super` — only valid as the receiver of a field/method access
+    /// (`super.field`, `super.method(...)`); `super(...)` constructor
+    /// delegation is `Stmt::SuperCall` instead.
+    Super,
     Ident(String),
     Assign(LValue, Box<Expr>),
     Call(String, Vec<Expr>),
@@ -194,4 +221,14 @@ pub enum Expr {
     PostDecr(String),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
+    /// `match(subject) { pattern: value, ..., default: value }` — specs.md §
+    /// Switch/Match. Exhaustiveness (E047) is nl-sema's job; a `None`
+    /// pattern is the `default` arm and must be last.
+    Match(Box<Expr>, Vec<MatchArm>),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MatchArm {
+    pub pattern: Option<Expr>,
+    pub value: Expr,
 }

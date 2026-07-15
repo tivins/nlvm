@@ -76,10 +76,30 @@ pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
             stdout: String::new(),
             stderr: String::new(),
         },
+        Err(VmError::Thrown(exc)) => RunOutcome {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: format!("Unhandled exception: {}", describe_exception(&exc)),
+        },
         Err(e) => RunOutcome {
             exit_code: 1,
             stdout: String::new(),
             stderr: format!("Unhandled exception: {e}"),
         },
+    }
+}
+
+/// `vm.md § Throw and stack unwinding`, step 5: "the VM prints the
+/// exception message ... to stderr". Renders as `ClassName: message` (or
+/// bare `ClassName` if `message` is absent/not a string) — matches the
+/// implicit-exception wording already used by e.g. `IndexOutOfBoundsException`.
+fn describe_exception(exc: &Value) -> String {
+    let Value::Object(obj) = exc else {
+        return exc.to_display_string();
+    };
+    let obj = obj.borrow();
+    match obj.fields.get("message") {
+        Some(Value::Str(s)) if !s.is_empty() => format!("{}: {s}", obj.class_name),
+        _ => obj.class_name.clone(),
     }
 }

@@ -32,6 +32,8 @@ pub struct MethodInfo {
 
 #[derive(Debug, Clone)]
 pub struct ClassInfo {
+    /// Resolved FQCN of the direct superclass (`extends`), if any.
+    pub extends: Option<String>,
     pub fields: Vec<FieldInfo>,
     pub ctors: Vec<CtorInfo>,
     pub methods: Vec<MethodInfo>,
@@ -54,6 +56,12 @@ pub fn fqcn_of(file: &SourceFile) -> String {
 /// `m5_0020`/`m5_0030` fixtures), so no implicit same-namespace visibility.
 pub fn import_map(file: &SourceFile) -> HashMap<String, String> {
     let mut map = HashMap::new();
+    // Built-in exception classes are globally visible without a `use` — see
+    // nl_syntax::prelude. Seeded first so a file's own declarations/`use`s
+    // (below) can still shadow a same-named builtin.
+    for prelude_file in nl_syntax::prelude::files() {
+        map.insert(fqcn_of(&prelude_file), fqcn_of(&prelude_file));
+    }
     let fqcn = fqcn_of(file);
     let simple = match &file.item {
         SourceItem::Class(c) => c.name.clone(),
@@ -111,7 +119,8 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
                     }
                 }
 
-                ClassInfo { fields, ctors, methods }
+                let extends = class.extends.as_ref().map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()));
+                ClassInfo { extends, fields, ctors, methods }
             }
             SourceItem::Interface(iface) => {
                 let methods = iface
@@ -123,7 +132,7 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
                         return_ty: resolve_type(&m.return_type, &imports),
                     })
                     .collect();
-                ClassInfo { fields: Vec::new(), ctors: Vec::new(), methods }
+                ClassInfo { extends: None, fields: Vec::new(), ctors: Vec::new(), methods }
             }
         };
         table.insert(fqcn, info);
@@ -139,15 +148,32 @@ pub fn find_ctor<'c>(classes: &'c HashMap<String, ClassInfo>, fqcn: &str, argc: 
     classes.get(fqcn)?.ctors.iter().find(|c| c.params.len() == argc)
 }
 
+/// Walks `fqcn`'s `extends` chain, so a method declared on an ancestor class
+/// resolves from a subclass reference too (instance calls, `super.m(...)`).
 pub fn find_method<'c>(
     classes: &'c HashMap<String, ClassInfo>,
     fqcn: &str,
     name: &str,
     argc: usize,
 ) -> Option<&'c MethodInfo> {
-    classes
-        .get(fqcn)?
-        .methods
-        .iter()
-        .find(|m| m.name == name && m.params.len() == argc)
+    let mut current = fqcn;
+    loop {
+        let info = classes.get(current)?;
+        if let Some(m) = info.methods.iter().find(|m| m.name == name && m.params.len() == argc) {
+            return Some(m);
+        }
+        current = info.extends.as_deref()?;
+    }
+}
+
+/// Like `find_method`, for fields.
+pub fn find_field<'c>(classes: &'c HashMap<String, ClassInfo>, fqcn: &str, name: &str) -> Option<&'c FieldInfo> {
+    let mut current = fqcn;
+    loop {
+        let info = classes.get(current)?;
+        if let Some(f) = info.fields.iter().find(|f| f.name == name) {
+            return Some(f);
+        }
+        current = info.extends.as_deref()?;
+    }
 }

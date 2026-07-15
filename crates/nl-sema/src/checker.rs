@@ -12,7 +12,8 @@
 use std::collections::{HashMap, HashSet};
 
 use nl_syntax::ast::{
-    BinOp, ClassDecl, Expr, LValue, MethodDecl, MethodKind, SourceFile, SourceItem, Stmt, Type, UnOp,
+    BinOp, Block, CatchClause, ClassDecl, Expr, LValue, MatchArm, MethodDecl, MethodKind, SourceFile, SourceItem,
+    Stmt, Type, UnOp,
 };
 
 use crate::class_table::{self, ClassTable};
@@ -38,8 +39,9 @@ pub fn check_source_file(file: &SourceFile, classes: &ClassTable) -> Result<(), 
     let mut sigs: HashMap<String, MethodSig> = HashMap::new();
     for m in &class.methods {
         if m.is_static && m.kind == MethodKind::Normal {
-            let param_types: Vec<Type> = m.params.iter().map(|p| p.ty.clone()).collect();
-            sigs.insert(m.name.clone(), (param_types, m.return_type.clone()));
+            let param_types: Vec<Type> = m.params.iter().map(|p| class_table::resolve_type(&p.ty, &imports)).collect();
+            let return_ty = class_table::resolve_type(&m.return_type, &imports);
+            sigs.insert(m.name.clone(), (param_types, return_ty));
         }
     }
 
@@ -83,7 +85,7 @@ fn check_constructor_delegation(class: &ClassDecl) -> Result<(), SemaError> {
 
     for ctor in &ctors {
         for (i, stmt) in ctor.body.iter().enumerate() {
-            if matches!(stmt, Stmt::ThisCall(_)) && i != 0 {
+            if matches!(stmt, Stmt::ThisCall(_) | Stmt::SuperCall(_)) && i != 0 {
                 return Err(SemaError::ThisCallNotFirst);
             }
         }
@@ -121,11 +123,16 @@ fn check_method(
     } else {
         Some(Type::Named(this_fqcn.to_string()))
     };
+    let super_ty = classes
+        .get(this_fqcn)
+        .and_then(|c| c.extends.clone())
+        .map(Type::Named);
     let mut checker = MethodChecker {
         sigs,
         classes,
         imports,
         this_ty,
+        super_ty,
         scopes: Vec::new(),
         next_id: 0,
         return_ty: class_table::resolve_type(&method.return_type, imports),
@@ -158,6 +165,10 @@ struct MethodChecker<'a> {
     /// `None` in a static context (where `this` isn't valid — not yet
     /// enforced as a hard error, E040 lands with static-context checks).
     this_ty: Option<Type>,
+    /// `Some(Type::Named(parent_fqcn))` inside an instance method/constructor
+    /// of a class that `extends` another; used for `super.field`/
+    /// `super.method(...)` expressions.
+    super_ty: Option<Type>,
     scopes: Vec<HashMap<String, VarEntry>>,
     next_id: u32,
     return_ty: Type,
@@ -199,22 +210,28 @@ impl<'a> MethodChecker<'a> {
         self.imports.get(name).cloned().unwrap_or_else(|| name.to_string())
     }
 
+    /// Walks `fqcn`'s `extends` chain, so a field/method declared on an
+    /// ancestor class resolves from a subclass reference too.
     fn field_ty(&self, fqcn: &str, name: &str) -> Option<Type> {
-        self.classes
-            .get(fqcn)?
-            .fields
-            .iter()
-            .find(|f| f.name == name)
-            .map(|f| f.ty.clone())
+        let mut current = fqcn;
+        loop {
+            let info = self.classes.get(current)?;
+            if let Some(f) = info.fields.iter().find(|f| f.name == name) {
+                return Some(f.ty.clone());
+            }
+            current = info.extends.as_deref()?;
+        }
     }
 
     fn method_return_ty(&self, fqcn: &str, name: &str, argc: usize) -> Option<Type> {
-        self.classes
-            .get(fqcn)?
-            .methods
-            .iter()
-            .find(|m| m.name == name && m.params.len() == argc)
-            .map(|m| m.return_ty.clone())
+        let mut current = fqcn;
+        loop {
+            let info = self.classes.get(current)?;
+            if let Some(m) = info.methods.iter().find(|m| m.name == name && m.params.len() == argc) {
+                return Some(m.return_ty.clone());
+            }
+            current = info.extends.as_deref()?;
+        }
     }
 
     /// Checks a block in its own scope. Returns the set of variables
@@ -253,12 +270,17 @@ impl<'a> MethodChecker<'a> {
                 self.check_expr(expr, &mut assigned)?;
                 Ok((assigned, false))
             }
-            Stmt::ThisCall(args) => {
+            Stmt::ThisCall(args) | Stmt::SuperCall(args) => {
                 for a in args {
                     self.check_expr(a, &mut assigned)?;
                 }
                 Ok((assigned, false))
             }
+            Stmt::Throw(expr) => {
+                self.check_expr(expr, &mut assigned)?;
+                Ok((assigned, true))
+            }
+            Stmt::Try { body, catches, finally } => self.check_try(body, catches, finally, assigned),
             Stmt::VarDecl { ty, name, init } => {
                 let value_ty = match init {
                     Some(e) => Some(self.check_expr(e, &mut assigned)?),
@@ -349,7 +371,8 @@ impl<'a> MethodChecker<'a> {
         let (Type::Named(from), Type::Named(to)) = (value_ty, target_ty) else {
             return false;
         };
-        from == to || self.classes.get(from).is_some_and(|info| info.implements.iter().any(|i| i == to))
+        class_table::is_subclass_or_same(self.classes, from, to)
+            || self.classes.get(from).is_some_and(|info| info.implements.iter().any(|i| i == to))
     }
 
     fn check_expr(&mut self, expr: &Expr, assigned: &mut HashSet<u32>) -> Result<Type, SemaError> {
@@ -363,6 +386,9 @@ impl<'a> MethodChecker<'a> {
             // E-code yet, deferred to nl-codegen (E040 lands with static
             // context checks).
             Expr::This => Ok(self.this_ty.clone().unwrap_or(Type::Void)),
+            // Unresolved (`super` in a class with no `extends`): deferred to
+            // nl-codegen, same leniency as `this` outside an instance method.
+            Expr::Super => Ok(self.super_ty.clone().unwrap_or(Type::Void)),
             Expr::Ident(name) => {
                 // Unresolved names have no dedicated E-code in compiler.md;
                 // nl-codegen already rejects them, so just defer to it here.
@@ -456,6 +482,91 @@ impl<'a> MethodChecker<'a> {
                 }
             }
             Expr::Binary(op, lhs, rhs) => self.check_binary(*op, lhs, rhs, assigned),
+            Expr::Match(subject, arms) => self.check_match(subject, arms, assigned),
+        }
+    }
+
+    /// compiler.md § Match exhaustiveness — E047. No enums yet, so the only
+    /// type that can be exhaustive without a `default` arm is `bool` (both
+    /// `true` and `false` present); everything else requires `default`.
+    /// Two arms with the same constant literal are also E047 (the second
+    /// would be unreachable).
+    fn check_match(&mut self, subject: &Expr, arms: &[MatchArm], assigned: &mut HashSet<u32>) -> Result<Type, SemaError> {
+        let subject_ty = self.check_expr(subject, assigned)?;
+        let mut seen: Vec<&Expr> = Vec::new();
+        let mut has_default = false;
+        let mut has_true = false;
+        let mut has_false = false;
+        let mut result_ty: Option<Type> = None;
+        for arm in arms {
+            match &arm.pattern {
+                None => has_default = true,
+                Some(pat) => {
+                    if seen.iter().any(|s| literal_eq(s, pat)) {
+                        return Err(SemaError::MatchNotExhaustive("unreachable duplicate arm".to_string()));
+                    }
+                    seen.push(pat);
+                    match pat {
+                        Expr::BoolLit(true) => has_true = true,
+                        Expr::BoolLit(false) => has_false = true,
+                        _ => {}
+                    }
+                    self.check_expr(pat, assigned)?;
+                }
+            }
+            let value_ty = self.check_expr(&arm.value, assigned)?;
+            if result_ty.is_none() {
+                result_ty = Some(value_ty);
+            }
+        }
+        let exhaustive = has_default || (matches!(subject_ty, Type::Bool) && has_true && has_false);
+        if !exhaustive {
+            return Err(SemaError::MatchNotExhaustive("default".to_string()));
+        }
+        Ok(result_ty.unwrap_or(Type::Void))
+    }
+
+    /// compiler.md § Unreachable catch clauses — E048.
+    fn check_try(
+        &mut self,
+        body: &Block,
+        catches: &[CatchClause],
+        finally: &Option<Block>,
+        assigned: HashSet<u32>,
+    ) -> Result<(HashSet<u32>, bool), SemaError> {
+        for j in 0..catches.len() {
+            let ty_j = self.class_fqcn(&catches[j].ty);
+            for earlier in &catches[..j] {
+                let ty_i = self.class_fqcn(&earlier.ty);
+                if class_table::is_subclass_or_same(self.classes, &ty_j, &ty_i) {
+                    return Err(SemaError::UnreachableCatch(catches[j].ty.clone(), earlier.ty.clone()));
+                }
+            }
+        }
+
+        self.check_block(body, assigned.clone())?;
+        for catch in catches {
+            self.push_scope();
+            let ty = self.resolve_ty(&Type::Named(catch.ty.clone()));
+            let id = self.declare(&catch.var, ty);
+            let mut catch_assigned = assigned.clone();
+            catch_assigned.insert(id);
+            self.check_stmts(&catch.body, catch_assigned)?;
+            self.pop_scope();
+        }
+
+        // A `try` statement's own definite-assignment contribution is
+        // deliberately conservative: since an exception may occur at any
+        // point inside `body`, nothing it or a `catch` block assigns is
+        // guaranteed afterward except what `finally` (which always runs)
+        // itself assigns. See PLAN.md Phase 5 for the documented gap versus
+        // compiler.md's full flow-sensitive rule.
+        match finally {
+            Some(finally_body) => {
+                let (finally_assigned, finally_term) = self.check_block(finally_body, assigned)?;
+                Ok((finally_assigned, finally_term))
+            }
+            None => Ok((assigned, false)),
         }
     }
 
@@ -550,6 +661,17 @@ impl<'a> MethodChecker<'a> {
             }
             BinOp::And | BinOp::Or => unreachable!("handled in check_binary"),
         }
+    }
+}
+
+/// Structural equality for match-arm patterns (E047 duplicate-arm check) —
+/// only literals are comparable this phase (no enum constants yet).
+fn literal_eq(a: &Expr, b: &Expr) -> bool {
+    match (a, b) {
+        (Expr::IntLit(x), Expr::IntLit(y)) => x == y,
+        (Expr::StringLit(x), Expr::StringLit(y)) => x == y,
+        (Expr::BoolLit(x), Expr::BoolLit(y)) => x == y,
+        _ => false,
     }
 }
 

@@ -1,0 +1,39 @@
+---
+title: "finally runs even when the exception is uncaught locally, then the original exception still propagates"
+file_separator: "#NLFILE"
+expected_exit_code: 11
+expected_stdout: ""
+---
+
+#NLFILE phase5/finally_rethrow/Counter.nl
+namespace phase5.finally_rethrow;
+class Counter {
+	public int value;
+	public construct() {
+		this.value = 0;
+	}
+}
+
+#NLFILE phase5/finally_rethrow/Main.nl
+namespace phase5.finally_rethrow;
+use phase5.finally_rethrow.Counter;
+class Main {
+	public static void risky(Counter c) {
+		try {
+			throw new ArithmeticException("boom");
+		}
+		finally {
+			c.value = c.value + 1;
+		}
+	}
+	public static int main(string[] args) {
+		Counter c = new Counter();
+		try {
+			risky(c);
+		}
+		catch (ArithmeticException ex) {
+			c.value = c.value + 10;
+		}
+		return c.value;
+	}
+}

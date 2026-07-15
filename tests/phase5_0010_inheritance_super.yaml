@@ -1,0 +1,40 @@
+---
+title: "class inheritance: extends, super(...) constructor delegation, super.method() call"
+file_separator: "#NLFILE"
+expected_exit_code: 105
+expected_stdout: ""
+---
+
+#NLFILE phase5/inherit/Base.nl
+namespace phase5.inherit;
+class Base {
+	public int value;
+	public construct(int v) {
+		this.value = v;
+	}
+	public int describe() {
+		return this.value;
+	}
+}
+
+#NLFILE phase5/inherit/Derived.nl
+namespace phase5.inherit;
+use phase5.inherit.Base;
+class Derived extends Base {
+	public construct(int v) {
+		super(v);
+	}
+	public int describe() {
+		return super.describe() + 100;
+	}
+}
+
+#NLFILE phase5/inherit/Main.nl
+namespace phase5.inherit;
+use phase5.inherit.Derived;
+class Main {
+	public static int main(string[] args) {
+		Derived d = new Derived(5);
+		return d.describe();
+	}
+}

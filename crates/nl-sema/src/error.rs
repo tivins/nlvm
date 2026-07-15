@@ -22,6 +22,10 @@ pub enum SemaError {
     ThisCallNotFirst,
     #[error("E046 — Constructor delegation cycle in class '{0}'")]
     DelegationCycle(String),
+    #[error("E047 — Match expression is not exhaustive (missing '{0}')")]
+    MatchNotExhaustive(String),
+    #[error("E048 — Unreachable catch clause: '{0}' is already caught by earlier clause '{1}'")]
+    UnreachableCatch(String, String),
 
     #[error("E027 — No 'main' method found")]
     NoMainMethod,
@@ -46,6 +50,8 @@ impl SemaError {
             SemaError::DuplicateClass(_) => "E042",
             SemaError::ThisCallNotFirst => "E045",
             SemaError::DelegationCycle(_) => "E046",
+            SemaError::MatchNotExhaustive(_) => "E047",
+            SemaError::UnreachableCatch(_, _) => "E048",
             SemaError::NoMainMethod => "E027",
             SemaError::MultipleMainMethods => "E028",
             SemaError::BadMainSignature => "E029",

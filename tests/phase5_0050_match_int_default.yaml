@@ -1,0 +1,27 @@
+---
+title: "match(int) expression with a default arm"
+file_separator: "#NLFILE"
+expected_exit_code: 42
+expected_stdout: ""
+---
+
+#NLFILE phase5/match_int/Main.nl
+namespace phase5.match_int;
+class Main {
+	public static string classify(int code) {
+		return match(code) {
+			200: "ok",
+			404: "missing",
+			default: "other",
+		};
+	}
+	public static int main(string[] args) {
+		string a = classify(200);
+		string b = classify(404);
+		string c = classify(1);
+		if (a == "ok" && b == "missing" && c == "other") {
+			return 42;
+		}
+		return 1;
+	}
+}

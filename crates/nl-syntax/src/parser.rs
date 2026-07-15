@@ -140,6 +140,7 @@ impl Parser {
             if self.is_keyword(Keyword::Const) {
                 self.bump();
             }
+            self.parse_throws_clause()?;
             self.eat_punct(Punct::Semi)?;
             methods.push(MethodSig { name, return_type, params });
         }
@@ -150,6 +151,13 @@ impl Parser {
     fn parse_class_decl(&mut self) -> Result<ClassDecl, SyntaxError> {
         self.eat_keyword(Keyword::Class)?;
         let name = self.eat_ident()?;
+
+        let extends = if self.is_keyword(Keyword::Extends) {
+            self.bump();
+            Some(self.eat_ident()?)
+        } else {
+            None
+        };
 
         let mut implements = Vec::new();
         if self.is_keyword(Keyword::Implements) {
@@ -171,7 +179,26 @@ impl Parser {
             self.parse_member(&mut fields, &mut methods)?;
         }
         self.eat_punct(Punct::RBrace)?;
-        Ok(ClassDecl { name, implements, fields, methods })
+        Ok(ClassDecl { name, extends, implements, fields, methods })
+    }
+
+    /// `throws Type1, Type2, ...` — optional, after a method/constructor's
+    /// parameter list and before its body (or before an interface method's
+    /// trailing `;`).
+    fn parse_throws_clause(&mut self) -> Result<Vec<String>, SyntaxError> {
+        let mut throws = Vec::new();
+        if self.is_keyword(Keyword::Throws) {
+            self.bump();
+            loop {
+                throws.push(self.eat_ident()?);
+                if self.is_punct(Punct::Comma) {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
+        Ok(throws)
     }
 
     /// Parses one field, constructor, destructor, or method declaration and
@@ -210,6 +237,7 @@ impl Parser {
             self.eat_punct(Punct::LParen)?;
             let params = self.parse_params()?;
             self.eat_punct(Punct::RParen)?;
+            let throws = self.parse_throws_clause()?;
             let body = self.parse_block()?;
             methods.push(MethodDecl {
                 name: "<construct>".to_string(),
@@ -219,6 +247,7 @@ impl Parser {
                 is_const: false,
                 return_type: Type::Void,
                 params,
+                throws,
                 body,
             });
             return Ok(());
@@ -236,6 +265,7 @@ impl Parser {
                 is_const: false,
                 return_type: Type::Void,
                 params: Vec::new(),
+                throws: Vec::new(),
                 body,
             });
             return Ok(());
@@ -253,6 +283,7 @@ impl Parser {
             } else {
                 false
             };
+            let throws = self.parse_throws_clause()?;
             let body = self.parse_block()?;
             methods.push(MethodDecl {
                 name,
@@ -262,6 +293,7 @@ impl Parser {
                 is_const,
                 return_type: ty,
                 params,
+                throws,
                 body,
             });
         } else {
@@ -423,6 +455,23 @@ impl Parser {
             self.eat_punct(Punct::Semi)?;
             return Ok(Stmt::ThisCall(args));
         }
+        if self.is_keyword(Keyword::Super) && matches!(self.peek_at(1), Some(TokenKind::Punct(Punct::LParen))) {
+            self.bump();
+            self.eat_punct(Punct::LParen)?;
+            let args = self.parse_args()?;
+            self.eat_punct(Punct::RParen)?;
+            self.eat_punct(Punct::Semi)?;
+            return Ok(Stmt::SuperCall(args));
+        }
+        if self.is_keyword(Keyword::Throw) {
+            self.bump();
+            let expr = self.parse_expr()?;
+            self.eat_punct(Punct::Semi)?;
+            return Ok(Stmt::Throw(expr));
+        }
+        if self.is_keyword(Keyword::Try) {
+            return self.parse_try_stmt();
+        }
         if self.is_keyword(Keyword::Return) {
             self.bump();
             if self.is_punct(Punct::Semi) {
@@ -529,6 +578,61 @@ impl Parser {
             then_branch,
             else_branch,
         })
+    }
+
+    /// `try { ... } catch (Type name) { ... } ... finally { ... }` —
+    /// specs.md § Exception handling. At least one `catch` or a `finally` is
+    /// required (a bare `try {}` with neither is meaningless); the parser
+    /// itself doesn't enforce that, it just produces empty vectors/`None`.
+    fn parse_try_stmt(&mut self) -> Result<Stmt, SyntaxError> {
+        self.eat_keyword(Keyword::Try)?;
+        let body = self.parse_block()?;
+        let mut catches = Vec::new();
+        while self.is_keyword(Keyword::Catch) {
+            self.bump();
+            self.eat_punct(Punct::LParen)?;
+            let ty = self.eat_ident()?;
+            let var = self.eat_ident()?;
+            self.eat_punct(Punct::RParen)?;
+            let catch_body = self.parse_block()?;
+            catches.push(CatchClause { ty, var, body: catch_body });
+        }
+        let finally = if self.is_keyword(Keyword::Finally) {
+            self.bump();
+            Some(self.parse_block()?)
+        } else {
+            None
+        };
+        Ok(Stmt::Try { body, catches, finally })
+    }
+
+    /// `match(subject) { pattern: value, ..., default: value }` — specs.md §
+    /// Switch/Match. A trailing comma after the last arm is optional.
+    fn parse_match_expr(&mut self) -> Result<Expr, SyntaxError> {
+        self.eat_keyword(Keyword::Match)?;
+        self.eat_punct(Punct::LParen)?;
+        let subject = self.parse_expr()?;
+        self.eat_punct(Punct::RParen)?;
+        self.eat_punct(Punct::LBrace)?;
+        let mut arms = Vec::new();
+        while !self.is_punct(Punct::RBrace) {
+            let pattern = if self.is_keyword(Keyword::Default) {
+                self.bump();
+                None
+            } else {
+                Some(self.parse_expr()?)
+            };
+            self.eat_punct(Punct::Colon)?;
+            let value = self.parse_expr()?;
+            arms.push(MatchArm { pattern, value });
+            if self.is_punct(Punct::Comma) {
+                self.bump();
+            } else {
+                break;
+            }
+        }
+        self.eat_punct(Punct::RBrace)?;
+        Ok(Expr::Match(Box::new(subject), arms))
     }
 
     fn parse_while_stmt(&mut self) -> Result<Stmt, SyntaxError> {
@@ -781,6 +885,9 @@ impl Parser {
         if self.is_keyword(Keyword::New) {
             return self.parse_new_expr();
         }
+        if self.is_keyword(Keyword::Match) {
+            return self.parse_match_expr();
+        }
         match self.bump().kind {
             TokenKind::IntLiteral(v) => Ok(Expr::IntLit(v)),
             TokenKind::FloatLiteral(v) => Ok(Expr::FloatLit(v)),
@@ -789,6 +896,7 @@ impl Parser {
             TokenKind::Keyword(Keyword::False) => Ok(Expr::BoolLit(false)),
             TokenKind::Keyword(Keyword::Null) => Ok(Expr::NullLit),
             TokenKind::Keyword(Keyword::This) => Ok(Expr::This),
+            TokenKind::Keyword(Keyword::Super) => Ok(Expr::Super),
             TokenKind::Punct(Punct::LParen) => {
                 let expr = self.parse_expr()?;
                 self.eat_punct(Punct::RParen)?;

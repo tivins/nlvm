@@ -1,0 +1,19 @@
+---
+title: "Compile E047 — two match arms with the same constant value"
+file_separator: "#NLFILE"
+expected_compile_error: "E047"
+---
+
+#NLFILE phase5/e047_dup/Main.nl
+namespace phase5.e047_dup;
+class Main {
+	public static int main(string[] args) {
+		int code = 200;
+		string label = match(code) {
+			200: "ok",
+			200: "duplicate",
+			default: "other",
+		};
+		return 0;
+	}
+}

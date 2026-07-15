@@ -18,9 +18,15 @@ pub use error::SemaError;
 /// an unresolved class/field/method defers to nl-codegen's harder error,
 /// same as unresolved calls already did before this phase.
 pub fn check_compile(files: &[SourceFile]) -> Result<(), SemaError> {
-    check_duplicate_classes(files)?;
-    let classes = class_table::build_class_table(files);
-    for file in files {
+    // Built-in exception classes (nl_syntax::prelude) are implicitly part of
+    // every program — see class_table::import_map, which seeds their simple
+    // names so user code can reference them without a `use`.
+    let mut all_files = nl_syntax::prelude::files();
+    all_files.extend_from_slice(files);
+
+    check_duplicate_classes(&all_files)?;
+    let classes = class_table::build_class_table(&all_files);
+    for file in &all_files {
         checker::check_source_file(file, &classes)?;
     }
     Ok(())

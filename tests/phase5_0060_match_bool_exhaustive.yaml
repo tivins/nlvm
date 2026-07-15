@@ -1,0 +1,20 @@
+---
+title: "match(bool) expression exhaustive without a default arm (both true/false covered)"
+file_separator: "#NLFILE"
+expected_exit_code: 21
+expected_stdout: ""
+---
+
+#NLFILE phase5/match_bool/Main.nl
+namespace phase5.match_bool;
+class Main {
+	public static int pick(bool flag) {
+		return match(flag) {
+			true: 1,
+			false: 2,
+		};
+	}
+	public static int main(string[] args) {
+		return pick(true) + pick(false) * 10;
+	}
+}

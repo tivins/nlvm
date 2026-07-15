@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
-use nl_syntax::ast::SourceItem;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -45,13 +44,14 @@ fn main() -> Result<()> {
 
     nl_sema::check_compile(&files).map_err(|e| anyhow::anyhow!("{e} ({})", e.code()))?;
 
+    // Also includes the built-in exception hierarchy's modules (see
+    // nl_syntax::prelude) — written out alongside the caller's own classes
+    // so `nlvm` can load a program that references e.g. `Exception` without
+    // the caller having to know about the prelude.
     let modules = nl_codegen::compile_program(&files).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    for (file, module) in files.iter().zip(&modules) {
-        let name = match &file.item {
-            SourceItem::Class(c) => &c.name,
-            SourceItem::Interface(i) => &i.name,
-        };
+    for module in &modules {
+        let name = module.this_class_name().unwrap_or("Unknown");
         let out_path = output_dir.join(format!("{name}.nlm"));
         std::fs::write(&out_path, module.encode())
             .with_context(|| format!("writing {}", out_path.display()))?;

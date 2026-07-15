@@ -20,14 +20,27 @@ use type_desc::method_descriptor;
 /// entries. See `nl_vm::Program` for how these modules are linked at load
 /// time.
 pub fn compile_program(files: &[SourceFile]) -> Result<Vec<Module>, CodegenError> {
-    let classes = build_class_table(files);
-    files.iter().map(|f| compile_file(f, &classes)).collect()
+    // Built-in exception classes (nl_syntax::prelude) are implicitly part of
+    // every program — see class_table::import_map, which seeds their simple
+    // names so user code can reference them without a `use`.
+    let mut all_files = nl_syntax::prelude::files();
+    all_files.extend_from_slice(files);
+
+    let classes = build_class_table(&all_files);
+    all_files.iter().map(|f| compile_file(f, &classes)).collect()
 }
 
 /// Single-file convenience wrapper — still valid for programs that don't
-/// reference any other class (e.g. the milestone 1-4 fixtures).
+/// reference any other class (e.g. the milestone 1-4 fixtures). `compile_program`
+/// always also returns the built-in prelude's modules, so the caller's own
+/// module is found by name rather than assumed to be at a fixed index.
 pub fn compile_source_file(file: &SourceFile) -> Result<Module, CodegenError> {
-    compile_program(std::slice::from_ref(file)).map(|mut modules| modules.remove(0))
+    let fqcn = fqcn_of(file);
+    let modules = compile_program(std::slice::from_ref(file))?;
+    Ok(modules
+        .into_iter()
+        .find(|m| m.this_class_name() == Some(fqcn.as_str()))
+        .expect("compile_program always compiles the input file's own module"))
 }
 
 fn compile_file(file: &SourceFile, classes: &HashMap<String, ClassInfo>) -> Result<Module, CodegenError> {
@@ -49,6 +62,13 @@ fn compile_file(file: &SourceFile, classes: &HashMap<String, ClassInfo>) -> Resu
             hash_algo: HashAlgo::Sha256,
         }),
         SourceItem::Class(class) => {
+            let super_class = match &class.extends {
+                Some(name) => {
+                    let super_fqcn = imports.get(name).cloned().unwrap_or_else(|| name.clone());
+                    cp.add_class(&super_fqcn)
+                }
+                None => 0,
+            };
             let interfaces = class
                 .implements
                 .iter()
@@ -110,7 +130,7 @@ fn compile_file(file: &SourceFile, classes: &HashMap<String, ClassInfo>) -> Resu
                 constant_pool: cp,
                 this_class,
                 class_flags: 0,
-                super_class: 0,
+                super_class,
                 interfaces,
                 fields,
                 methods,
@@ -155,6 +175,17 @@ fn compile_method(
     }
     emitter.pop_scope();
 
+    // Descriptive metadata only — checked-exception declaration/propagation
+    // (E016/E017) is not statically enforced this phase (PLAN.md Phase 5).
+    let throws_types: Vec<u16> = method
+        .throws
+        .iter()
+        .map(|name| {
+            let fqcn = imports.get(name).cloned().unwrap_or_else(|| name.clone());
+            emitter.cp.add_class(&fqcn)
+        })
+        .collect();
+
     let mut flags = visibility_method_flag(method.visibility);
     if method.is_static {
         flags |= method_flags::STATIC;
@@ -169,11 +200,11 @@ fn compile_method(
         flags,
         name_index,
         descriptor_index,
-        throws_types: Vec::new(),
+        throws_types,
         max_locals: emitter.max_locals(),
         max_stack: emitter.max_stack(),
         code: emitter.code,
-        exception_table: Vec::new(),
+        exception_table: emitter.exception_table,
         line_table: Vec::new(),
     })
 }

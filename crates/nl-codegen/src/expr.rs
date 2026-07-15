@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use nl_bytecode::{ConstantPool, Opcode};
 use nl_syntax::ast::{BinOp, Expr, LValue, Type, UnOp};
 
-use crate::class_table::{find_ctor, find_method, resolve_type, ClassInfo};
+use crate::class_table::{find_ctor, find_field, find_method, resolve_type, ClassInfo};
 use crate::error::CodegenError;
 use crate::type_desc::{method_descriptor, type_descriptor};
 
@@ -83,6 +83,9 @@ pub struct Emitter<'a> {
     next_local: u16,
     max_locals: u16,
     pub(crate) loops: Vec<LoopCtx>,
+    /// Accumulated across every `try` statement in this method — vm.md §
+    /// Exception table.
+    pub exception_table: Vec<nl_bytecode::ExceptionTableEntry>,
 }
 
 impl<'a> Emitter<'a> {
@@ -108,6 +111,7 @@ impl<'a> Emitter<'a> {
             next_local: 0,
             max_locals: 0,
             loops: Vec::new(),
+            exception_table: Vec::new(),
         }
     }
 
@@ -126,12 +130,12 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn op(&mut self, op: Opcode, stack_delta: i32) {
+    pub(crate) fn op(&mut self, op: Opcode, stack_delta: i32) {
         self.code.push(op as u8);
         self.track(stack_delta);
     }
 
-    fn op_u16(&mut self, op: Opcode, operand: u16, stack_delta: i32) {
+    pub(crate) fn op_u16(&mut self, op: Opcode, operand: u16, stack_delta: i32) {
         self.code.push(op as u8);
         self.code.extend_from_slice(&operand.to_be_bytes());
         self.track(stack_delta);
@@ -215,7 +219,7 @@ impl<'a> Emitter<'a> {
     /// assignment (which must leave the assigned value on the stack as the
     /// expression's own result, after popping the receiver/index/value for
     /// SET_FIELD/ARRAY_STORE).
-    fn declare_scratch_local(&mut self, ty: ExprTy) -> u16 {
+    pub(crate) fn declare_scratch_local(&mut self, ty: ExprTy) -> u16 {
         let name = format!("$tmp{}", self.next_local);
         self.declare_local(name, ty)
     }
@@ -229,7 +233,7 @@ impl<'a> Emitter<'a> {
         Err(CodegenError::Unsupported(format!("undefined variable '{name}'")))
     }
 
-    fn resolve_class_name(&self, name: &str) -> String {
+    pub(crate) fn resolve_class_name(&self, name: &str) -> String {
         self.imports.get(name).cloned().unwrap_or_else(|| name.to_string())
     }
 
@@ -279,6 +283,14 @@ impl<'a> Emitter<'a> {
                 self.op_u16(Opcode::Load, 0, 1);
                 Ok(ExprTy::Object(self.this_fqcn.clone()))
             }
+            // Same receiver value as `this` at runtime — only the static
+            // type (and, for method calls, the dispatch mode) differs; see
+            // `compile_method_call`'s special-case for non-virtual dispatch.
+            Expr::Super => {
+                let super_fqcn = self.superclass_fqcn()?;
+                self.op_u16(Opcode::Load, 0, 1);
+                Ok(ExprTy::Object(super_fqcn))
+            }
             Expr::Ident(name) => {
                 let slot = self.lookup_local(name)?;
                 self.op_u16(Opcode::Load, slot.index, 1);
@@ -296,7 +308,49 @@ impl<'a> Emitter<'a> {
             Expr::PostDecr(name) => self.compile_incr(name, -1),
             Expr::Unary(op, inner) => self.compile_unary(*op, inner),
             Expr::Binary(op, lhs, rhs) => self.compile_binary(*op, lhs, rhs),
+            Expr::Match(subject, arms) => self.compile_match(subject, arms),
         }
+    }
+
+    /// `match(subject) { pattern: value, ... }` — vm.md § Match expressions:
+    /// a chain of `DUP`+compare+branch, one per non-`default` arm. Sema
+    /// (E047) guarantees exhaustiveness, so a missing `default` arm can only
+    /// happen for an exhaustively-covered `bool` subject — in that case the
+    /// last arm doubles as the fallback (no comparison emitted for it).
+    fn compile_match(&mut self, subject: &Expr, arms: &[nl_syntax::ast::MatchArm]) -> Result<ExprTy, CodegenError> {
+        let subject_ty = self.compile_expr(subject)?;
+        let mut end_patches = Vec::new();
+        let mut result_ty: Option<ExprTy> = None;
+        let last = arms.len().saturating_sub(1);
+        for (i, arm) in arms.iter().enumerate() {
+            let is_fallback = arm.pattern.is_none() || i == last;
+            let next_patch = if is_fallback {
+                None
+            } else {
+                self.op(Opcode::Dup, 1);
+                let pattern = arm.pattern.as_ref().expect("non-fallback arm always has a pattern");
+                let pattern_ty = self.compile_expr(pattern)?;
+                self.coerce_value(&pattern_ty, &subject_ty, "match pattern")?;
+                self.op(Opcode::CmpEq, -1);
+                Some(self.branch(Opcode::IfFalse, -1))
+            };
+            self.op(Opcode::Pop, -1);
+            let value_ty = self.compile_expr(&arm.value)?;
+            if let Some(expected) = &result_ty {
+                self.coerce_value(&value_ty, expected, "match arm")?;
+            } else {
+                result_ty = Some(value_ty);
+            }
+            end_patches.push(self.branch(Opcode::Goto, 0));
+            if let Some((pc, operand)) = next_patch {
+                self.patch_branch_to(pc, operand, self.code.len());
+            }
+        }
+        let end_pc = self.code.len();
+        for (pc, operand) in end_patches {
+            self.patch_branch_to(pc, operand, end_pc);
+        }
+        Ok(result_ty.unwrap_or(ExprTy::Void))
     }
 
     fn compile_assign(&mut self, target: &LValue, value: &Expr) -> Result<ExprTy, CodegenError> {
@@ -359,11 +413,18 @@ impl<'a> Emitter<'a> {
     }
 
     fn lookup_field(&self, fqcn: &str, name: &str) -> Result<Type, CodegenError> {
-        self.classes
-            .get(fqcn)
-            .and_then(|c| c.fields.iter().find(|f| f.name == name))
+        find_field(self.classes, fqcn, name)
             .map(|f| f.ty.clone())
             .ok_or_else(|| CodegenError::Unsupported(format!("unknown field '{name}' on '{fqcn}'")))
+    }
+
+    /// The direct superclass's FQCN, for `super.field`/`super.method(...)`
+    /// and `super(...)` constructor delegation.
+    pub(crate) fn superclass_fqcn(&self) -> Result<String, CodegenError> {
+        self.classes
+            .get(&self.this_fqcn)
+            .and_then(|c| c.extends.clone())
+            .ok_or_else(|| CodegenError::Unsupported(format!("'super' used in class '{}' with no superclass", self.this_fqcn)))
     }
 
     fn compile_incr(&mut self, name: &str, delta: i16) -> Result<ExprTy, CodegenError> {
@@ -417,6 +478,57 @@ impl<'a> Emitter<'a> {
         let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
         self.op_u16(Opcode::InvokeSpecial, method_ref, -(1 + args.len() as i32));
         Ok(ExprTy::Object(fqcn))
+    }
+
+    fn compile_super_method_call(&mut self, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+        let super_fqcn = self.superclass_fqcn()?;
+        self.op_u16(Opcode::Load, 0, 1);
+        let method = find_method(self.classes, &super_fqcn, name, args.len())
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "unknown method '{name}' on superclass '{super_fqcn}' with {} argument(s)",
+                    args.len()
+                ))
+            })?;
+        let param_tys: Vec<ExprTy> = method.params.iter().map(expr_ty_of).collect();
+        self.compile_call_args(args, &param_tys, name)?;
+
+        let descriptor = method_descriptor(&method.params, &method.return_ty);
+        let name_index = self.cp.add_utf8(name.to_string());
+        let descriptor_index = self.cp.add_type_desc(&descriptor);
+        let class_index = self.cp.add_class(&super_fqcn);
+        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        let return_ty = expr_ty_of(&method.return_ty);
+        let result_delta = if return_ty == ExprTy::Void { 0 } else { 1 };
+        self.op_u16(Opcode::InvokeSpecial, method_ref, result_delta - args.len() as i32 - 1);
+        Ok(return_ty)
+    }
+
+    /// `super(args);` constructor delegation — like `this(...)` but invokes
+    /// the direct superclass's constructor instead of an overload in the
+    /// same class.
+    pub(crate) fn compile_super_call(&mut self, args: &[Expr]) -> Result<(), CodegenError> {
+        let super_fqcn = self.superclass_fqcn()?;
+        self.op_u16(Opcode::Load, 0, 1);
+        let ctor = find_ctor(self.classes, &super_fqcn, args.len())
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "no constructor of '{super_fqcn}' with {} argument(s) for super(...)",
+                    args.len()
+                ))
+            })?;
+        let param_tys: Vec<ExprTy> = ctor.params.iter().map(expr_ty_of).collect();
+        self.compile_call_args(args, &param_tys, "super(...)")?;
+
+        let descriptor = method_descriptor(&ctor.params, &Type::Void);
+        let name_index = self.cp.add_utf8("<construct>");
+        let descriptor_index = self.cp.add_type_desc(&descriptor);
+        let class_index = self.cp.add_class(&super_fqcn);
+        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        self.op_u16(Opcode::InvokeSpecial, method_ref, -(1 + args.len() as i32));
+        Ok(())
     }
 
     pub(crate) fn compile_this_call(&mut self, args: &[Expr]) -> Result<(), CodegenError> {
@@ -473,6 +585,12 @@ impl<'a> Emitter<'a> {
     }
 
     fn compile_method_call(&mut self, target: &Expr, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+        // `super.method(...)` — non-virtual dispatch straight to the
+        // superclass's implementation (vm.md § Super calls), unlike every
+        // other receiver which goes through virtual INVOKE_INSTANCE below.
+        if matches!(target, Expr::Super) {
+            return self.compile_super_method_call(name, args);
+        }
         let target_ty = self.compile_expr(target)?;
         match &target_ty {
             ExprTy::Array(_) if name == "length" && args.is_empty() => {

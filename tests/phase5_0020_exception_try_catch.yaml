@@ -1,0 +1,31 @@
+---
+title: "throw + try/catch: implicit ArithmeticException caught, most-specific-first catch ordering"
+file_separator: "#NLFILE"
+expected_exit_code: 111
+expected_stdout: ""
+---
+
+#NLFILE phase5/try_catch/Main.nl
+namespace phase5.try_catch;
+class Main {
+	public static int compute() {
+		int result = 0;
+		try {
+			result = 1;
+			throw new ArithmeticException("boom");
+		}
+		catch (ArithmeticException ex) {
+			result = result + 10;
+		}
+		catch (Exception ex) {
+			result = -1000;
+		}
+		finally {
+			result = result + 100;
+		}
+		return result;
+	}
+	public static int main(string[] args) {
+		return compute();
+	}
+}

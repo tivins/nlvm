@@ -21,11 +21,30 @@ pub struct MethodInfo {
 
 #[derive(Debug, Clone)]
 pub struct ClassInfo {
+    /// Resolved FQCN of the direct superclass (`extends`), if any.
+    pub extends: Option<String>,
     /// Resolved FQCNs of directly implemented interfaces (classes only, no
     /// transitivity through interface-`extends` — out of scope this phase).
     pub implements: Vec<String>,
     pub fields: Vec<FieldInfo>,
     pub methods: Vec<MethodInfo>,
+}
+
+/// Whether `sub` is `sup` itself or (transitively) extends it — used for
+/// unreachable-catch-clause detection (compiler.md § Unreachable catch
+/// clauses, E048): an earlier `catch (sup ...)` already catches everything
+/// a later `catch (sub ...)` would.
+pub fn is_subclass_or_same(classes: &ClassTable, sub: &str, sup: &str) -> bool {
+    let mut current = sub.to_string();
+    loop {
+        if current == sup {
+            return true;
+        }
+        match classes.get(&current).and_then(|c| c.extends.clone()) {
+            Some(parent) => current = parent,
+            None => return false,
+        }
+    }
 }
 
 pub type ClassTable = HashMap<String, ClassInfo>;
@@ -47,6 +66,12 @@ pub fn fqcn_of(file: &SourceFile) -> String {
 /// equivalent for the fixtures that confirm this).
 pub fn import_map(file: &SourceFile) -> HashMap<String, String> {
     let mut map = HashMap::new();
+    // Built-in exception classes are globally visible without a `use` — see
+    // nl_syntax::prelude. Seeded first so a file's own declarations/`use`s
+    // (checked below) can still shadow a same-named builtin.
+    for prelude_file in nl_syntax::prelude::files() {
+        map.insert(fqcn_of(&prelude_file), fqcn_of(&prelude_file));
+    }
     let fqcn = fqcn_of(file);
     let simple = match &file.item {
         SourceItem::Class(c) => c.name.clone(),
@@ -100,7 +125,8 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                     .iter()
                     .map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()))
                     .collect();
-                ClassInfo { implements, fields, methods }
+                let extends = class.extends.as_ref().map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()));
+                ClassInfo { extends, implements, fields, methods }
             }
             SourceItem::Interface(iface) => {
                 let methods = iface
@@ -112,7 +138,7 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                         return_ty: resolve_type(&m.return_type, &imports),
                     })
                     .collect();
-                ClassInfo { implements: Vec::new(), fields: Vec::new(), methods }
+                ClassInfo { extends: None, implements: Vec::new(), fields: Vec::new(), methods }
             }
         };
         table.insert(fqcn, info);
