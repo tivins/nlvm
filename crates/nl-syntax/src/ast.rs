@@ -225,6 +225,10 @@ pub enum Expr {
     /// Switch/Match. Exhaustiveness (E047) is nl-sema's job; a `None`
     /// pattern is the `default` arm and must be last.
     Match(Box<Expr>, Vec<MatchArm>),
+    /// `cond ? then : else` — specs.md § Ternary operator. Precedence level
+    /// 10 (below `||`, above `??`/`?:` elvis — the latter two are not
+    /// implemented yet).
+    Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, PartialEq)]

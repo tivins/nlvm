@@ -1,0 +1,32 @@
+---
+title: "Phase 6 — ternary operator and system.Int/Float/Bool parse/tryParse/toString"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "42 null 3.14 null true null"
+---
+
+#NLFILE phase6/parse/Main.nl
+namespace phase6.parse;
+class Main {
+	public static int main(string[] args) {
+		int|null a = system.Int.tryParse("42");
+		int|null b = system.Int.tryParse("abc");
+		float c = system.Float.parse("3.14");
+		float|null d = system.Float.tryParse("nope");
+		bool e = system.Bool.parse("true");
+		bool|null f = system.Bool.tryParse("nope");
+
+		system.Out.print(a != null ? "42" : "null");
+		system.Out.print(" ");
+		system.Out.print(b == null ? "null" : "notnull");
+		system.Out.print(" ");
+		system.Out.print(system.Float.toString(c));
+		system.Out.print(" ");
+		system.Out.print(d == null ? "null" : "notnull");
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(e));
+		system.Out.print(" ");
+		system.Out.print(f == null ? "null" : "notnull");
+		return 0;
+	}
+}

@@ -1,5 +1,6 @@
 pub mod error;
 pub mod interpreter;
+mod native;
 pub mod program;
 pub mod value;
 

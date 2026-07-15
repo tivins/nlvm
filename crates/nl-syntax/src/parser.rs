@@ -708,7 +708,7 @@ impl Parser {
     }
 
     fn parse_assignment(&mut self) -> Result<Expr, SyntaxError> {
-        let lhs = self.parse_or()?;
+        let lhs = self.parse_ternary()?;
         let compound = match &self.peek().kind {
             TokenKind::Punct(Punct::Assign) => Some(None),
             TokenKind::Punct(Punct::PlusEq) => Some(Some(BinOp::Add)),
@@ -737,6 +737,23 @@ impl Parser {
             }
         };
         Ok(Expr::Assign(target, Box::new(value)))
+    }
+
+    /// specs.md § Operator precedence, level 10 — `cond ? then : else`,
+    /// right-associative, binds tighter than `??`/`?:` (not implemented) and
+    /// looser than `||`. The `then` branch accepts a full expression (as in
+    /// C/Java); the `else` branch recurses here so `a ? b : c ? d : e`
+    /// nests to the right.
+    fn parse_ternary(&mut self) -> Result<Expr, SyntaxError> {
+        let cond = self.parse_or()?;
+        if !self.is_punct(Punct::Question) {
+            return Ok(cond);
+        }
+        self.bump();
+        let then_branch = self.parse_expr()?;
+        self.eat_punct(Punct::Colon)?;
+        let else_branch = self.parse_ternary()?;
+        Ok(Expr::Ternary(Box::new(cond), Box::new(then_branch), Box::new(else_branch)))
     }
 
     fn parse_or(&mut self) -> Result<Expr, SyntaxError> {

@@ -15,6 +15,12 @@ use crate::value::Value;
 /// the right module instead of assuming everything lives in one file.
 pub struct Program {
     modules: HashMap<String, Module>,
+    /// Accumulated output from native `system.Out`/`system.Err` calls (see
+    /// `crate::native`) — `Program` is threaded by shared reference through
+    /// every call frame, so these are interior-mutable rather than
+    /// threaded explicitly through `call_static`/`call_instance`/`run_frame`.
+    stdout: RefCell<String>,
+    stderr: RefCell<String>,
 }
 
 impl Program {
@@ -25,7 +31,7 @@ impl Program {
                 map.insert(name.to_string(), module);
             }
         }
-        Program { modules: map }
+        Program { modules: map, stdout: RefCell::new(String::new()), stderr: RefCell::new(String::new()) }
     }
 
     pub fn get(&self, fqcn: &str) -> Option<&Module> {
@@ -35,14 +41,22 @@ impl Program {
     pub fn find_main(&self) -> Option<(&Module, &MethodDescriptor)> {
         self.modules.values().find_map(|m| m.find_method("main").map(|meth| (m, meth)))
     }
+
+    pub fn write_stdout(&self, s: &str) {
+        self.stdout.borrow_mut().push_str(s);
+    }
+
+    pub fn write_stderr(&self, s: &str) {
+        self.stderr.borrow_mut().push_str(s);
+    }
 }
 
 pub struct RunOutcome {
     pub exit_code: i32,
-    /// Populated once native stdout bindings exist (milestone 7);
-    /// empty for every program today.
+    /// Everything written via `system.Out.print`/`println` (see `crate::native`).
     pub stdout: String,
-    /// Unhandled-exception message, if any (see § Program startup, step 7).
+    /// Everything written via `system.Err.print`/`println`, plus the
+    /// unhandled-exception message if any (see § Program startup, step 7).
     pub stderr: String,
 }
 
@@ -65,28 +79,28 @@ pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
             .collect(),
     )));
 
-    match call_static(&program, main_module, main, vec![args_array]) {
-        Ok(Some(Value::Int(code))) => RunOutcome {
-            exit_code: code as i32,
-            stdout: String::new(),
-            stderr: String::new(),
-        },
-        Ok(_) => RunOutcome {
-            exit_code: 0,
-            stdout: String::new(),
-            stderr: String::new(),
-        },
-        Err(VmError::Thrown(exc)) => RunOutcome {
-            exit_code: 1,
-            stdout: String::new(),
-            stderr: format!("Unhandled exception: {}", describe_exception(&exc)),
-        },
-        Err(e) => RunOutcome {
-            exit_code: 1,
-            stdout: String::new(),
-            stderr: format!("Unhandled exception: {e}"),
-        },
+    let result = call_static(&program, main_module, main, vec![args_array]);
+    let stdout = program.stdout.into_inner();
+    let mut stderr = program.stderr.into_inner();
+    match result {
+        Ok(Some(Value::Int(code))) => RunOutcome { exit_code: code as i32, stdout, stderr },
+        Ok(_) => RunOutcome { exit_code: 0, stdout, stderr },
+        Err(VmError::Thrown(exc)) => {
+            append_line(&mut stderr, &format!("Unhandled exception: {}", describe_exception(&exc)));
+            RunOutcome { exit_code: 1, stdout, stderr }
+        }
+        Err(e) => {
+            append_line(&mut stderr, &format!("Unhandled exception: {e}"));
+            RunOutcome { exit_code: 1, stdout, stderr }
+        }
     }
+}
+
+fn append_line(buf: &mut String, line: &str) {
+    if !buf.is_empty() && !buf.ends_with('\n') {
+        buf.push('\n');
+    }
+    buf.push_str(line);
 }
 
 /// `vm.md § Throw and stack unwinding`, step 5: "the VM prints the

@@ -1,6 +1,7 @@
 mod checker;
 mod class_table;
 pub mod error;
+mod stdlib;
 mod types;
 
 use std::collections::HashSet;
@@ -27,7 +28,7 @@ pub fn check_compile(files: &[SourceFile]) -> Result<(), SemaError> {
     check_duplicate_classes(&all_files)?;
     let classes = class_table::build_class_table(&all_files);
     for file in &all_files {
-        checker::check_source_file(file, &classes)?;
+        checker::check_source_file(file, &all_files, &classes)?;
     }
     Ok(())
 }

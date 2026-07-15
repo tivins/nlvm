@@ -484,6 +484,16 @@ fn exec_step(
                     return Err(VmError::Malformed("stack underflow on INVOKE_STATIC"));
                 }
                 let call_args = stack.split_off(stack.len() - param_count);
+                // `system.*` stdlib classes have no backing bytecode
+                // `Module` — vm.md § Standard library binding — so they're
+                // intercepted here, before the ordinary module lookup below.
+                if crate::native::is_native_class(&class_fqcn) {
+                    if let Some(result) = crate::native::dispatch(program, &class_fqcn, &name, call_args)? {
+                        stack.push(result);
+                    }
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
                 let target_module = program
                     .get(&class_fqcn)
                     .ok_or_else(|| VmError::MethodNotFound(format!("{class_fqcn}.{name}")))?;

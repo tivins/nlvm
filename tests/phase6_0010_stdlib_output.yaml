@@ -1,0 +1,21 @@
+---
+title: "Phase 6 — system.Out.print/println with int/float/bool/string overloads"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "42 3.14 true hello\n"
+---
+
+#NLFILE phase6/stdout/Main.nl
+namespace phase6.stdout;
+class Main {
+	public static int main(string[] args) {
+		system.Out.print(42);
+		system.Out.print(" ");
+		system.Out.print(3.14);
+		system.Out.print(" ");
+		system.Out.print(true);
+		system.Out.print(" ");
+		system.Out.println("hello");
+		return 0;
+	}
+}

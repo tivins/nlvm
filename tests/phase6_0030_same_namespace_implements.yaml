@@ -1,0 +1,29 @@
+---
+title: "Phase 6 — implementing an interface declared in the same namespace needs no 'use'"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "true true"
+---
+
+#NLFILE phase6/samens/Shape.nl
+namespace phase6.samens;
+interface Shape {}
+
+#NLFILE phase6/samens/Circle.nl
+namespace phase6.samens;
+class Circle implements Shape {
+	public construct() {}
+}
+
+#NLFILE phase6/samens/Main.nl
+namespace phase6.samens;
+use phase6.samens.Circle;
+class Main {
+	public static int main(string[] args) {
+		Circle c = new Circle();
+		system.Out.print((c instanceof Shape) ? "true" : "false");
+		system.Out.print(" ");
+		system.Out.print((c instanceof Circle) ? "true" : "false");
+		return 0;
+	}
+}

@@ -24,7 +24,7 @@ use crate::types;
 /// (bare, unqualified calls — always static, as before this phase).
 type MethodSig = (Vec<Type>, Type);
 
-pub fn check_source_file(file: &SourceFile, classes: &ClassTable) -> Result<(), SemaError> {
+pub fn check_source_file(file: &SourceFile, all_files: &[SourceFile], classes: &ClassTable) -> Result<(), SemaError> {
     let SourceItem::Class(class) = &file.item else {
         // Interfaces declare signatures only — nothing to flow-check yet.
         return Ok(());
@@ -33,7 +33,7 @@ pub fn check_source_file(file: &SourceFile, classes: &ClassTable) -> Result<(), 
     check_duplicate_methods(class)?;
     check_constructor_delegation(class)?;
 
-    let imports = class_table::import_map(file);
+    let imports = class_table::import_map(file, all_files);
     let this_fqcn = class_table::fqcn_of(file);
 
     let mut sigs: HashMap<String, MethodSig> = HashMap::new();
@@ -444,6 +444,21 @@ impl<'a> MethodChecker<'a> {
                 for a in args {
                     arg_types.push(self.check_expr(a, assigned)?);
                 }
+                // `system.Out.print(...)` and friends: the receiver is a
+                // dotted namespace/class path, not a value, so it never
+                // resolves through `self.resolve`/`self.classes` above —
+                // recognized here by name instead (see crate::stdlib).
+                if let Some(path) = dotted_path(target) {
+                    let leading = path.split('.').next().expect("dotted_path is never empty");
+                    if self.resolve(leading).is_none() {
+                        if let Some((param_types, return_ty)) = crate::stdlib::lookup(&path, name, args.len()) {
+                            for (actual, expected) in arg_types.iter().zip(&param_types) {
+                                self.check_assignable(actual, expected)?;
+                            }
+                            return Ok(return_ty);
+                        }
+                    }
+                }
                 match &target_ty {
                     Type::Array(_) if name == "length" && args.is_empty() => Ok(Type::Int),
                     Type::Named(fqcn) => Ok(self.method_return_ty(fqcn, name, args.len()).unwrap_or(Type::Void)),
@@ -483,6 +498,18 @@ impl<'a> MethodChecker<'a> {
             }
             Expr::Binary(op, lhs, rhs) => self.check_binary(*op, lhs, rhs, assigned),
             Expr::Match(subject, arms) => self.check_match(subject, arms, assigned),
+            Expr::Ternary(cond, then_e, else_e) => {
+                let cond_ty = self.check_expr(cond, assigned)?;
+                if !matches!(cond_ty, Type::Bool) {
+                    return Err(SemaError::BadUnaryOperator("?:".to_string(), types::display(&cond_ty)));
+                }
+                let then_ty = self.check_expr(then_e, assigned)?;
+                // Lenient about mismatched branch types, same as `match`
+                // arms above — nl-codegen enforces coercibility at emission
+                // time, where it also has `ExprTy` to work with.
+                self.check_expr(else_e, assigned)?;
+                Ok(then_ty)
+            }
         }
     }
 
@@ -661,6 +688,19 @@ impl<'a> MethodChecker<'a> {
             }
             BinOp::And | BinOp::Or => unreachable!("handled in check_binary"),
         }
+    }
+}
+
+/// Reconstructs a dotted path (`"system.Out"`) from a chain of
+/// `Ident`/`FieldAccess` nodes, or `None` if `expr` isn't such a chain (e.g.
+/// it's a call or a literal) — used to recognize a `system.*` stdlib class
+/// reference, which never resolves as a value the normal way (see
+/// `crate::stdlib`).
+fn dotted_path(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Ident(name) => Some(name.clone()),
+        Expr::FieldAccess(base, name) => Some(format!("{}.{name}", dotted_path(base)?)),
+        _ => None,
     }
 }
 

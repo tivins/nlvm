@@ -1,6 +1,7 @@
 mod class_table;
 pub mod error;
 mod expr;
+mod stdlib;
 mod stmt;
 mod type_desc;
 
@@ -27,7 +28,7 @@ pub fn compile_program(files: &[SourceFile]) -> Result<Vec<Module>, CodegenError
     all_files.extend_from_slice(files);
 
     let classes = build_class_table(&all_files);
-    all_files.iter().map(|f| compile_file(f, &classes)).collect()
+    all_files.iter().map(|f| compile_file(f, &all_files, &classes)).collect()
 }
 
 /// Single-file convenience wrapper — still valid for programs that don't
@@ -43,8 +44,8 @@ pub fn compile_source_file(file: &SourceFile) -> Result<Module, CodegenError> {
         .expect("compile_program always compiles the input file's own module"))
 }
 
-fn compile_file(file: &SourceFile, classes: &HashMap<String, ClassInfo>) -> Result<Module, CodegenError> {
-    let imports = import_map(file);
+fn compile_file(file: &SourceFile, all_files: &[SourceFile], classes: &HashMap<String, ClassInfo>) -> Result<Module, CodegenError> {
+    let imports = import_map(file, all_files);
     let fqcn = fqcn_of(file);
     let mut cp = ConstantPool::new();
     let this_class = cp.add_class(&fqcn);

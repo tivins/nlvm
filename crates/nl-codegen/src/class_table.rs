@@ -51,16 +51,28 @@ pub fn fqcn_of(file: &SourceFile) -> String {
     }
 }
 
-/// Simple name -> FQCN, from this file's own declaration plus its `use`
-/// imports. `use` is required even for classes in the same namespace (see
-/// `m5_0020`/`m5_0030` fixtures), so no implicit same-namespace visibility.
-pub fn import_map(file: &SourceFile) -> HashMap<String, String> {
+/// Simple name -> FQCN, from this file's own declaration, every other class
+/// in the same namespace (specs.md § Imports: "another type in the same
+/// namespace" can conflict with an import, which only makes sense if
+/// same-namespace types are already in scope without one — see
+/// `m5_0020`'s `Dog implements Animal` with no `use`), plus explicit `use`
+/// imports.
+pub fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String, String> {
     let mut map = HashMap::new();
     // Built-in exception classes are globally visible without a `use` — see
     // nl_syntax::prelude. Seeded first so a file's own declarations/`use`s
     // (below) can still shadow a same-named builtin.
     for prelude_file in nl_syntax::prelude::files() {
         map.insert(fqcn_of(&prelude_file), fqcn_of(&prelude_file));
+    }
+    for other in all_files {
+        if other.namespace == file.namespace {
+            let simple = match &other.item {
+                SourceItem::Class(c) => c.name.clone(),
+                SourceItem::Interface(i) => i.name.clone(),
+            };
+            map.insert(simple, fqcn_of(other));
+        }
     }
     let fqcn = fqcn_of(file);
     let simple = match &file.item {
@@ -92,7 +104,7 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
     let mut table = HashMap::with_capacity(files.len());
     for file in files {
         let fqcn = fqcn_of(file);
-        let imports = import_map(file);
+        let imports = import_map(file, files);
         let info = match &file.item {
             SourceItem::Class(class) => {
                 let fields = class

@@ -309,7 +309,23 @@ impl<'a> Emitter<'a> {
             Expr::Unary(op, inner) => self.compile_unary(*op, inner),
             Expr::Binary(op, lhs, rhs) => self.compile_binary(*op, lhs, rhs),
             Expr::Match(subject, arms) => self.compile_match(subject, arms),
+            Expr::Ternary(cond, then_e, else_e) => self.compile_ternary(cond, then_e, else_e),
         }
+    }
+
+    /// `cond ? then : else` — a conditional branch, mirroring
+    /// `compile_short_circuit`'s pattern of tracking stack depth linearly
+    /// through both (mutually exclusive at runtime) branches.
+    fn compile_ternary(&mut self, cond: &Expr, then_e: &Expr, else_e: &Expr) -> Result<ExprTy, CodegenError> {
+        self.compile_expr_bool(cond)?;
+        let (else_pc, else_operand) = self.branch(Opcode::IfFalse, -1);
+        let then_ty = self.compile_expr(then_e)?;
+        let (end_pc, end_operand) = self.branch(Opcode::Goto, 0);
+        self.patch_branch_to(else_pc, else_operand, self.code.len());
+        let else_ty = self.compile_expr(else_e)?;
+        self.coerce_value(&else_ty, &then_ty, "ternary branch")?;
+        self.patch_branch_to(end_pc, end_operand, self.code.len());
+        Ok(then_ty)
     }
 
     /// `match(subject) { pattern: value, ... }` — vm.md § Match expressions:
@@ -591,6 +607,17 @@ impl<'a> Emitter<'a> {
         if matches!(target, Expr::Super) {
             return self.compile_super_method_call(name, args);
         }
+        // `system.Out.print(...)` and friends: the receiver is a dotted
+        // class-path expression (nested `FieldAccess`/`Ident`), not a value
+        // — compiling it normally would try (and fail) to load a local
+        // variable named `system`. Detected before falling into the normal
+        // instance-call path below.
+        if let Some(path) = dotted_path(target) {
+            let leading = path.split('.').next().expect("dotted_path is never empty");
+            if self.lookup_local(leading).is_err() && crate::stdlib::is_stdlib_class(&path) {
+                return self.compile_stdlib_call(&path, name, args);
+            }
+        }
         let target_ty = self.compile_expr(target)?;
         match &target_ty {
             ExprTy::Array(_) if name == "length" && args.is_empty() => {
@@ -628,6 +655,59 @@ impl<'a> Emitter<'a> {
                 "method call on unsupported type {other:?}"
             ))),
         }
+    }
+
+    /// Emits an `INVOKE_STATIC` against a native `system.*` class (no
+    /// backing bytecode `Module` — see `nl_vm::native`). `print`/`println`
+    /// are normalized to their single `(string) -> void` overload first
+    /// (`crate::stdlib::is_printlike`); everything else uses its declared
+    /// signature from `crate::stdlib::signature`.
+    fn compile_stdlib_call(&mut self, fqcn: &str, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+        if crate::stdlib::is_printlike(fqcn, name) {
+            if args.len() != 1 {
+                return Err(CodegenError::Unsupported(format!(
+                    "'{name}' expects 1 argument, got {}",
+                    args.len()
+                )));
+            }
+            let ty = self.compile_expr(&args[0])?;
+            match ty {
+                ExprTy::StringT => {}
+                ExprTy::Int | ExprTy::Float | ExprTy::Bool => self.op(Opcode::ToString, 0),
+                other => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "'{name}' expects a string/int/float/bool argument, got {other:?}"
+                    )))
+                }
+            }
+            return self.emit_native_static(fqcn, name, &[Type::StringT], &Type::Void);
+        }
+
+        let (param_types, return_ty) = crate::stdlib::signature(fqcn, name, args.len()).ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "unknown stdlib method '{fqcn}.{name}' with {} argument(s)",
+                args.len()
+            ))
+        })?;
+        let param_expr_tys: Vec<ExprTy> = param_types.iter().map(expr_ty_of).collect();
+        self.compile_call_args(args, &param_expr_tys, name)?;
+        self.emit_native_static(fqcn, name, &param_types, &return_ty)
+    }
+
+    /// `params`/`return_ty` describe both the operand-stack effect (the
+    /// caller must already have pushed exactly `params.len()` values) and
+    /// the constant-pool `MethodRef` descriptor the VM's native dispatcher
+    /// matches on.
+    fn emit_native_static(&mut self, fqcn: &str, name: &str, params: &[Type], return_ty: &Type) -> Result<ExprTy, CodegenError> {
+        let class_index = self.cp.add_class(fqcn);
+        let name_index = self.cp.add_utf8(name.to_string());
+        let descriptor = method_descriptor(params, return_ty);
+        let descriptor_index = self.cp.add_type_desc(&descriptor);
+        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        let ret = expr_ty_of(return_ty);
+        let result_delta = if ret == ExprTy::Void { 0 } else { 1 };
+        self.op_u16(Opcode::InvokeStatic, method_ref, result_delta - params.len() as i32);
+        Ok(ret)
     }
 
     fn compile_index(&mut self, target: &Expr, index: &Expr) -> Result<ExprTy, CodegenError> {
@@ -882,6 +962,18 @@ fn peek_type(expr: &Expr) -> Option<ExprTy> {
             (Some(ExprTy::StringT), _) | (_, Some(ExprTy::StringT)) => Some(ExprTy::StringT),
             _ => None,
         },
+        _ => None,
+    }
+}
+
+/// Reconstructs a dotted path (`"system.Out"`) from a chain of
+/// `Ident`/`FieldAccess` nodes, or `None` if `expr` isn't such a chain —
+/// used to recognize a `system.*` stdlib class reference before it's
+/// (incorrectly) compiled as a value. Mirrors `nl_sema::checker`'s copy.
+fn dotted_path(expr: &Expr) -> Option<String> {
+    match expr {
+        Expr::Ident(name) => Some(name.clone()),
+        Expr::FieldAccess(base, name) => Some(format!("{}.{name}", dotted_path(base)?)),
         _ => None,
     }
 }
