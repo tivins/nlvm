@@ -1,0 +1,14 @@
+---
+title: "Compile E003 — null assigned to non-nullable string"
+file_separator: "#NLFILE"
+expected_compile_error: "E003"
+---
+
+#NLFILE phase3/e003/Main.nl
+namespace phase3.e003;
+class Main {
+	public static int main(string[] args) {
+		string s = null;
+		return 0;
+	}
+}

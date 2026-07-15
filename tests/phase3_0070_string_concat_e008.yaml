@@ -1,0 +1,14 @@
+---
+title: "Compile E008 — concatenating string with a non-Stringable array type"
+file_separator: "#NLFILE"
+expected_compile_error: "E008"
+---
+
+#NLFILE phase3/e008/Main.nl
+namespace phase3.e008;
+class Main {
+	public static int main(string[] args) {
+		string s = "args: " + args;
+		return 0;
+	}
+}

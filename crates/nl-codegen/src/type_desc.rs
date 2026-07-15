@@ -10,6 +10,8 @@ pub fn type_descriptor(ty: &Type) -> String {
         Type::Void => "void".to_string(),
         Type::Array(inner) => format!("{}[]", type_descriptor(inner)),
         Type::Named(name) => name.clone(),
+        Type::NullT => "null".to_string(),
+        Type::Union(members) => members.iter().map(type_descriptor).collect::<Vec<_>>().join("|"),
     }
 }
 

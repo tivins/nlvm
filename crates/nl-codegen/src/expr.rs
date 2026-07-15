@@ -27,7 +27,17 @@ pub fn expr_ty_of(ty: &Type) -> ExprTy {
         Type::Byte => ExprTy::Byte,
         Type::StringT => ExprTy::StringT,
         Type::Void => ExprTy::Void,
+        Type::NullT => ExprTy::Null,
         Type::Array(_) | Type::Named(_) => ExprTy::Other,
+        // Values are dynamically tagged at runtime (vm.md § Value
+        // representation), so a union collapses to the `ExprTy` of its first
+        // non-null member for codegen purposes — nullability itself is
+        // already enforced earlier by nl-sema, not re-checked here.
+        Type::Union(members) => members
+            .iter()
+            .find(|m| !matches!(m, Type::NullT))
+            .map(expr_ty_of)
+            .unwrap_or(ExprTy::Null),
     }
 }
 
@@ -252,6 +262,9 @@ impl<'a> Emitter<'a> {
         let value_ty = self.compile_expr(value)?;
         if slot.ty == ExprTy::Float && value_ty == ExprTy::Int {
             self.op(Opcode::I2F, 0);
+        } else if value_ty == ExprTy::Null {
+            // Nullability was already validated by nl-sema; a `Value::Null`
+            // fits any slot regardless of its static (non-null) `ExprTy`.
         } else if slot.ty != value_ty {
             return Err(CodegenError::Unsupported(format!(
                 "cannot assign {value_ty:?} to variable '{name}' of type {:?}",
@@ -294,6 +307,8 @@ impl<'a> Emitter<'a> {
             let actual = self.compile_expr(arg)?;
             if *expected_ty == ExprTy::Float && actual == ExprTy::Int {
                 self.op(Opcode::I2F, 0);
+            } else if actual == ExprTy::Null {
+                // Nullability was already validated by nl-sema.
             } else if actual != *expected_ty {
                 return Err(CodegenError::Unsupported(format!(
                     "argument to '{name}' has type {actual:?}, expected {expected_ty:?}"
@@ -385,6 +400,17 @@ impl<'a> Emitter<'a> {
 
         let ty_l = self.compile_expr(lhs)?;
         let ty_r = self.compile_expr(rhs)?;
+
+        // Non-numeric equality (string/bool/null/...): the VM compares
+        // tagged values directly (vm.md § Value representation) — no
+        // numeric widening applies, and nl-sema already validated that the
+        // comparison is legal.
+        if matches!(op, BinOp::Eq | BinOp::Ne) && !(is_numeric_ty(ty_l) && is_numeric_ty(ty_r)) {
+            let opcode = if op == BinOp::Eq { Opcode::CmpEq } else { Opcode::CmpNe };
+            self.op(opcode, -1);
+            return Ok(ExprTy::Bool);
+        }
+
         let numeric_ty = self.promote_numeric(ty_l, ty_r)?;
 
         match op {
@@ -491,6 +517,10 @@ fn peek_type(expr: &Expr) -> Option<ExprTy> {
         },
         _ => None,
     }
+}
+
+fn is_numeric_ty(ty: ExprTy) -> bool {
+    matches!(ty, ExprTy::Int | ExprTy::Float | ExprTy::Byte)
 }
 
 fn arithmetic_opcode(op: BinOp, ty: ExprTy) -> Opcode {

@@ -26,7 +26,7 @@ impl<'a> Emitter<'a> {
             Stmt::Expr(expr) => {
                 self.compile_expr_stmt(expr)?;
             }
-            Stmt::VarDecl { ty, name, init } => {
+            Stmt::VarDecl { ty, name, init: Some(init) } => {
                 let init_ty = self.compile_expr(init)?;
                 let declared_ty = match ty {
                     Some(t) => expr_ty_of(t),
@@ -34,6 +34,8 @@ impl<'a> Emitter<'a> {
                 };
                 if declared_ty == ExprTy::Float && init_ty == ExprTy::Int {
                     self.emit_i2f();
+                } else if init_ty == ExprTy::Null {
+                    // Nullability was already validated by nl-sema.
                 } else if declared_ty != init_ty {
                     return Err(CodegenError::Unsupported(format!(
                         "cannot initialize variable '{name}' of type {declared_ty:?} with {init_ty:?}"
@@ -41,6 +43,15 @@ impl<'a> Emitter<'a> {
                 }
                 let index = self.declare_local(name.clone(), declared_ty);
                 self.emit_store(index);
+            }
+            Stmt::VarDecl { ty, name, init: None } => {
+                // `auto` without an initializer is rejected by nl-sema
+                // (E005); reaching this point implies `ty` is present. The
+                // slot is reserved but left unwritten — nl-sema's definite
+                // assignment check (E001) guarantees no read reaches it
+                // before an explicit assignment.
+                let declared_ty = expr_ty_of(ty.as_ref().expect("nl-sema guarantees a type here"));
+                self.declare_local(name.clone(), declared_ty);
             }
             Stmt::If {
                 cond,

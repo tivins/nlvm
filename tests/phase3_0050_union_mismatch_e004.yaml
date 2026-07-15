@@ -1,0 +1,14 @@
+---
+title: "Compile E004 — bool is not assignable to the int|string union"
+file_separator: "#NLFILE"
+expected_compile_error: "E004"
+---
+
+#NLFILE phase3/e004/Main.nl
+namespace phase3.e004;
+class Main {
+	public static int main(string[] args) {
+		int|string v = true;
+		return 0;
+	}
+}

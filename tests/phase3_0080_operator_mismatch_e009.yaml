@@ -1,0 +1,15 @@
+---
+title: "Compile E009 — '+' is not defined between bool and int"
+file_separator: "#NLFILE"
+expected_compile_error: "E009"
+---
+
+#NLFILE phase3/e009/Main.nl
+namespace phase3.e009;
+class Main {
+	public static int main(string[] args) {
+		bool b = true;
+		int y = b + 1;
+		return y;
+	}
+}

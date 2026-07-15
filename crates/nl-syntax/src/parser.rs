@@ -159,11 +159,31 @@ impl Parser {
         })
     }
 
+    /// Parses `Type1|Type2|...` — see specs.md § Union types and explicit
+    /// nullable. Array suffixes bind tighter than `|`, so `string[]|null` is
+    /// `(string[])|null`, not `string[](|null)`.
     fn parse_type(&mut self) -> Result<Type, SyntaxError> {
+        let mut ty = self.parse_type_atom()?;
+        if self.is_punct(Punct::Pipe) {
+            let mut members = vec![ty];
+            while self.is_punct(Punct::Pipe) {
+                self.bump();
+                members.push(self.parse_type_atom()?);
+            }
+            ty = Type::Union(members);
+        }
+        Ok(ty)
+    }
+
+    fn parse_type_atom(&mut self) -> Result<Type, SyntaxError> {
         let mut ty = match &self.peek().kind {
             TokenKind::Keyword(Keyword::Void) => {
                 self.bump();
                 Type::Void
+            }
+            TokenKind::Keyword(Keyword::Null) => {
+                self.bump();
+                Type::NullT
             }
             TokenKind::Ident(name) => match name.as_str() {
                 "int" => {
@@ -255,15 +275,21 @@ impl Parser {
     }
 
     /// Local variable declarations start with `auto` or a primitive type
-    /// keyword followed by an identifier (e.g. `int x = ...`). Anything else
-    /// is parsed as an expression statement (assignment, call, ...).
+    /// keyword followed by an identifier, a `[` (array suffix), or a `|`
+    /// (union suffix, e.g. `string|null s = ...`). Anything else is parsed
+    /// as an expression statement (assignment, call, ...).
     fn looks_like_var_decl(&self) -> bool {
         if self.is_keyword(Keyword::Auto) {
             return true;
         }
         if let TokenKind::Ident(name) = &self.peek().kind {
             if matches!(name.as_str(), "int" | "float" | "bool" | "byte" | "string") {
-                return matches!(self.tokens.get(self.pos + 1).map(|t| &t.kind), Some(TokenKind::Ident(_)));
+                return matches!(
+                    self.tokens.get(self.pos + 1).map(|t| &t.kind),
+                    Some(TokenKind::Ident(_))
+                        | Some(TokenKind::Punct(Punct::Pipe))
+                        | Some(TokenKind::Punct(Punct::LBracket))
+                );
             }
         }
         false
@@ -277,8 +303,12 @@ impl Parser {
             Some(self.parse_type()?)
         };
         let name = self.eat_ident()?;
-        self.eat_punct(Punct::Assign)?;
-        let init = self.parse_expr()?;
+        let init = if self.is_punct(Punct::Assign) {
+            self.bump();
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
         self.eat_punct(Punct::Semi)?;
         Ok(Stmt::VarDecl { ty, name, init })
     }
@@ -334,7 +364,7 @@ impl Parser {
                 init.push(Stmt::VarDecl {
                     ty: ty.clone(),
                     name,
-                    init: expr,
+                    init: Some(expr),
                 });
                 if self.is_punct(Punct::Comma) {
                     self.bump();

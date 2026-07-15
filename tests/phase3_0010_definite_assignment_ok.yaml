@@ -1,0 +1,21 @@
+---
+title: "definite assignment — both if/else branches assign before use"
+file_separator: "#NLFILE"
+expected_exit_code: 7
+expected_stdout: ""
+---
+
+#NLFILE phase3/definite/Main.nl
+namespace phase3.definite;
+class Main {
+	public static int main(string[] args) {
+		int y;
+		int cond = 1;
+		if (cond == 1) {
+			y = 7;
+		} else {
+			y = 99;
+		}
+		return y;
+	}
+}

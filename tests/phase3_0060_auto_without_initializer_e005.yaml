@@ -1,0 +1,14 @@
+---
+title: "Compile E005 — 'auto' without an initializer"
+file_separator: "#NLFILE"
+expected_compile_error: "E005"
+---
+
+#NLFILE phase3/e005/Main.nl
+namespace phase3.e005;
+class Main {
+	public static int main(string[] args) {
+		auto x;
+		return 0;
+	}
+}

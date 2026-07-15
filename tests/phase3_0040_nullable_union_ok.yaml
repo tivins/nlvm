@@ -1,0 +1,27 @@
+---
+title: "nullable union type (T|null) — flows through locals, params and return, compared to null"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: ""
+---
+
+#NLFILE phase3/nullable/Main.nl
+namespace phase3.nullable;
+class Main {
+	private static string|null pick(string|null s) {
+		return s;
+	}
+
+	public static int main(string[] args) {
+		string|null a = null;
+		string|null b = "hi";
+		string|null ra = pick(a);
+		string|null rb = pick(b);
+		if (rb == "hi") {
+			if (ra == null) {
+				return 0;
+			}
+		}
+		return 1;
+	}
+}

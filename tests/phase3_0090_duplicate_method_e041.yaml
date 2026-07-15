@@ -1,0 +1,19 @@
+---
+title: "Compile E041 — duplicate method with identical signature"
+file_separator: "#NLFILE"
+expected_compile_error: "E041"
+---
+
+#NLFILE phase3/e041/Main.nl
+namespace phase3.e041;
+class Main {
+	private static int helper(int x) {
+		return x;
+	}
+	private static bool helper(int x) {
+		return x == 0;
+	}
+	public static int main(string[] args) {
+		return 0;
+	}
+}

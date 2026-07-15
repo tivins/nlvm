@@ -1,0 +1,18 @@
+---
+title: "Compile E001 — variable read after an if without else may not be assigned"
+file_separator: "#NLFILE"
+expected_compile_error: "E001"
+---
+
+#NLFILE phase3/e001/Main.nl
+namespace phase3.e001;
+class Main {
+	public static int main(string[] args) {
+		int z;
+		int cond = 1;
+		if (cond == 1) {
+			z = 1;
+		}
+		return z;
+	}
+}

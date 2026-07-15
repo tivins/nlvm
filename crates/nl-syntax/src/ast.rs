@@ -47,6 +47,12 @@ pub enum Type {
     Void,
     Array(Box<Type>),
     Named(String),
+    /// The `null` member of a union type (e.g. the `null` in `string|null`).
+    /// Only meaningful as a member of `Union`, or as the static type of the
+    /// `null` literal expression itself.
+    NullT,
+    /// `Type1|Type2|...` — see specs.md § Union types and explicit nullable.
+    Union(Vec<Type>),
 }
 
 pub type Block = Vec<Stmt>;
@@ -58,7 +64,7 @@ pub enum Stmt {
     VarDecl {
         ty: Option<Type>,
         name: String,
-        init: Expr,
+        init: Option<Expr>,
     },
     If {
         cond: Expr,
