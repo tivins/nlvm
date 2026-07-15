@@ -1,0 +1,33 @@
+---
+title: "class with fields, constructor, field read/write via 'this' and via an external reference"
+file_separator: "#NLFILE"
+expected_exit_code: 17
+expected_stdout: ""
+---
+
+#NLFILE phase4/fields/Point.nl
+namespace phase4.fields;
+class Point {
+	public int x;
+	public int y;
+
+	public construct(int x, int y) {
+		this.x = x;
+		this.y = y;
+	}
+
+	public int sum() {
+		return this.x + this.y;
+	}
+}
+
+#NLFILE phase4/fields/Main.nl
+namespace phase4.fields;
+use phase4.fields.Point;
+class Main {
+	public static int main(string[] args) {
+		Point p = new Point(3, 4);
+		p.x = p.x + 10;
+		return p.sum();
+	}
+}

@@ -33,13 +33,10 @@ pub fn run_test(test: &TestFile) -> Outcome {
         ));
     }
 
-    let mut modules = Vec::new();
-    for file in &files {
-        match nl_codegen::compile_source_file(file) {
-            Ok(m) => modules.push(m),
-            Err(e) => return Outcome::Fail(format!("codegen error: {e}")),
-        }
-    }
+    let modules = match nl_codegen::compile_program(&files) {
+        Ok(m) => m,
+        Err(e) => return Outcome::Fail(format!("codegen error: {e}")),
+    };
 
     if let Some(msg) = check_module_structure(&test.header, &modules) {
         return Outcome::Fail(msg);
@@ -57,11 +54,11 @@ pub fn run_test(test: &TestFile) -> Outcome {
         return Outcome::Fail(format!("entry point check failed: {e} ({})", e.code()));
     }
 
-    let Some(main_module) = modules.iter().find(|m| m.find_method("main").is_some()) else {
+    if !modules.iter().any(|m| m.find_method("main").is_some()) {
         return Outcome::Fail("no module with 'main' found after codegen".to_string());
-    };
+    }
 
-    let run_outcome = nl_vm::run_program(main_module, &[]);
+    let run_outcome = nl_vm::run_program(&modules, &[]);
 
     if let Some(expected) = test.header.expected_exit_code {
         if run_outcome.exit_code != expected {

@@ -1,11 +1,41 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
-use nl_bytecode::Module;
+use nl_bytecode::{Module, MethodDescriptor};
 
 use crate::error::VmError;
 use crate::interpreter::call_static;
 use crate::value::Value;
+
+/// A linked program: every module that will be executed together, keyed by
+/// fully-qualified class name. Built once per run so cross-file references
+/// (`new`, field access, instance/static method calls — see
+/// `nl_bytecode::ConstantPoolEntry::{Class,FieldRef,MethodRef}`) resolve to
+/// the right module instead of assuming everything lives in one file.
+pub struct Program {
+    modules: HashMap<String, Module>,
+}
+
+impl Program {
+    pub fn new(modules: Vec<Module>) -> Self {
+        let mut map = HashMap::with_capacity(modules.len());
+        for module in modules {
+            if let Some(name) = module.this_class_name() {
+                map.insert(name.to_string(), module);
+            }
+        }
+        Program { modules: map }
+    }
+
+    pub fn get(&self, fqcn: &str) -> Option<&Module> {
+        self.modules.get(fqcn)
+    }
+
+    pub fn find_main(&self) -> Option<(&Module, &MethodDescriptor)> {
+        self.modules.values().find_map(|m| m.find_method("main").map(|meth| (m, meth)))
+    }
+}
 
 pub struct RunOutcome {
     pub exit_code: i32,
@@ -17,16 +47,15 @@ pub struct RunOutcome {
 }
 
 /// Program startup — see nlvm-specs/docs/vm.md § Program startup.
-pub fn run_program(module: &Module, program_args: &[String]) -> RunOutcome {
-    let main = match module.find_method("main") {
-        Some(m) => m,
-        None => {
-            return RunOutcome {
-                exit_code: 1,
-                stdout: String::new(),
-                stderr: format!("{}", VmError::NoMain),
-            };
-        }
+pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
+    let program = Program::new(modules.to_vec());
+
+    let Some((main_module, main)) = program.find_main() else {
+        return RunOutcome {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: format!("{}", VmError::NoMain),
+        };
     };
 
     let args_array = Value::Array(Rc::new(RefCell::new(
@@ -36,7 +65,7 @@ pub fn run_program(module: &Module, program_args: &[String]) -> RunOutcome {
             .collect(),
     )));
 
-    match call_static(module, main, vec![args_array]) {
+    match call_static(&program, main_module, main, vec![args_array]) {
         Ok(Some(Value::Int(code))) => RunOutcome {
             exit_code: code as i32,
             stdout: String::new(),

@@ -1,0 +1,39 @@
+---
+title: "overloaded constructors with 'this(...)' delegation (E045/E046-safe form)"
+file_separator: "#NLFILE"
+expected_exit_code: 30
+expected_stdout: ""
+---
+
+#NLFILE phase4/chain/Contact.nl
+namespace phase4.chain;
+class Contact {
+	public string lastName;
+	public string firstName;
+	public int age;
+
+	public construct(string lastName, string firstName, int age) {
+		this.lastName = lastName;
+		this.firstName = firstName;
+		this.age = age;
+	}
+
+	public construct(string lastName, string firstName) {
+		this(lastName, firstName, 0);
+	}
+
+	public int age() {
+		return this.age;
+	}
+}
+
+#NLFILE phase4/chain/Main.nl
+namespace phase4.chain;
+use phase4.chain.Contact;
+class Main {
+	public static int main(string[] args) {
+		auto a = new Contact("Doe", "John");
+		auto b = new Contact("Smith", "Jane", 30);
+		return a.age() + b.age();
+	}
+}

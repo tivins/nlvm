@@ -1,8 +1,9 @@
 use nl_bytecode::Opcode;
 use nl_syntax::ast::{Block, Stmt};
 
+use crate::class_table::resolve_type;
 use crate::error::CodegenError;
-use crate::expr::{expr_ty_of, Emitter, ExprTy, LoopCtx};
+use crate::expr::{expr_ty_of, Emitter, LoopCtx};
 
 impl<'a> Emitter<'a> {
     pub fn compile_block(&mut self, block: &[Stmt]) -> Result<(), CodegenError> {
@@ -29,18 +30,10 @@ impl<'a> Emitter<'a> {
             Stmt::VarDecl { ty, name, init: Some(init) } => {
                 let init_ty = self.compile_expr(init)?;
                 let declared_ty = match ty {
-                    Some(t) => expr_ty_of(t),
-                    None => init_ty,
+                    Some(t) => expr_ty_of(&resolve_type(t, self.imports)),
+                    None => init_ty.clone(),
                 };
-                if declared_ty == ExprTy::Float && init_ty == ExprTy::Int {
-                    self.emit_i2f();
-                } else if init_ty == ExprTy::Null {
-                    // Nullability was already validated by nl-sema.
-                } else if declared_ty != init_ty {
-                    return Err(CodegenError::Unsupported(format!(
-                        "cannot initialize variable '{name}' of type {declared_ty:?} with {init_ty:?}"
-                    )));
-                }
+                self.coerce_value(&init_ty, &declared_ty, name)?;
                 let index = self.declare_local(name.clone(), declared_ty);
                 self.emit_store(index);
             }
@@ -50,8 +43,14 @@ impl<'a> Emitter<'a> {
                 // slot is reserved but left unwritten — nl-sema's definite
                 // assignment check (E001) guarantees no read reaches it
                 // before an explicit assignment.
-                let declared_ty = expr_ty_of(ty.as_ref().expect("nl-sema guarantees a type here"));
+                let declared_ty = expr_ty_of(&resolve_type(
+                    ty.as_ref().expect("nl-sema guarantees a type here"),
+                    self.imports,
+                ));
                 self.declare_local(name.clone(), declared_ty);
+            }
+            Stmt::ThisCall(args) => {
+                self.compile_this_call(args)?;
             }
             Stmt::If {
                 cond,

@@ -56,6 +56,68 @@ pub enum Keyword {
 }
 
 impl Keyword {
+    /// Inverse of `lookup` — the source spelling of this keyword. Used to
+    /// let a keyword double as a namespace-path segment (e.g. `test.class`,
+    /// `test.instanceof` — both appear in nlvm-specs/tests fixtures), the
+    /// only context where NL's own reserved words show up as plain path
+    /// components rather than syntax.
+    pub fn as_str(&self) -> &'static str {
+        use Keyword::*;
+        match self {
+            If => "if",
+            Else => "else",
+            While => "while",
+            For => "for",
+            Break => "break",
+            Continue => "continue",
+            Switch => "switch",
+            Case => "case",
+            Default => "default",
+            Match => "match",
+            Auto => "auto",
+            Const => "const",
+            Ref => "ref",
+            Void => "void",
+            True => "true",
+            False => "false",
+            Null => "null",
+            Return => "return",
+            Undefined => "undefined",
+            Class => "class",
+            Interface => "interface",
+            Namespace => "namespace",
+            Extends => "extends",
+            Implements => "implements",
+            This => "this",
+            Super => "super",
+            SelfType => "Self",
+            TypeKw => "type",
+            Use => "use",
+            As => "as",
+            Instanceof => "instanceof",
+            Private => "private",
+            Public => "public",
+            Protected => "protected",
+            Static => "static",
+            Final => "final",
+            Abstract => "abstract",
+            Readonly => "readonly",
+            Nodiscard => "nodiscard",
+            Template => "template",
+            Operator => "operator",
+            Try => "try",
+            Catch => "catch",
+            Finally => "finally",
+            Throw => "throw",
+            Throws => "throws",
+            Construct => "construct",
+            Destruct => "destruct",
+            New => "new",
+            Enum => "enum",
+            Typedef => "typedef",
+        }
+    }
+
     pub fn lookup(ident: &str) -> Option<Keyword> {
         use Keyword::*;
         Some(match ident {

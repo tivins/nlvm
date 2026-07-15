@@ -1,41 +1,57 @@
 //! Per-file semantic checker — name resolution, definite assignment (E001),
 //! null safety (E003/E004), `auto` deduction (E005), string concatenation
-//! (E008), operator compatibility (E009), and duplicate methods (E041).
-//! See nlvm-specs/docs/compiler.md.
+//! (E008), operator compatibility (E009), duplicate methods (E041),
+//! constructor delegation (E045/E046). See nlvm-specs/docs/compiler.md.
 //!
-//! Scoped to what nl-codegen already compiles: a single class per file,
-//! static methods only, calls resolved within the same class. Checks that
-//! require features not yet in the AST (interfaces, instance methods,
-//! `match`, `try`/`catch`, `instanceof`, casts, templates, ...) land with
-//! those features in later phases.
+//! Cross-file class/field/method references (objects, `new`, arrays,
+//! interfaces) are checked leniently against the program-wide `ClassTable`:
+//! an unknown class/field/method has no dedicated E-code yet and defers to
+//! nl-codegen's harder failure — same pattern already used for unresolved
+//! calls before this phase.
 
 use std::collections::{HashMap, HashSet};
 
-use nl_syntax::ast::{BinOp, ClassDecl, Expr, MethodDecl, SourceFile, Stmt, Type, UnOp};
+use nl_syntax::ast::{
+    BinOp, ClassDecl, Expr, LValue, MethodDecl, MethodKind, SourceFile, SourceItem, Stmt, Type, UnOp,
+};
 
+use crate::class_table::{self, ClassTable};
 use crate::error::SemaError;
 use crate::types;
 
-/// A method's signature, as seen from call sites within the same class.
+/// A method's signature, as seen from call sites within the same class
+/// (bare, unqualified calls — always static, as before this phase).
 type MethodSig = (Vec<Type>, Type);
 
-pub fn check_source_file(file: &SourceFile) -> Result<(), SemaError> {
-    check_duplicate_methods(&file.class)?;
+pub fn check_source_file(file: &SourceFile, classes: &ClassTable) -> Result<(), SemaError> {
+    let SourceItem::Class(class) = &file.item else {
+        // Interfaces declare signatures only — nothing to flow-check yet.
+        return Ok(());
+    };
+
+    check_duplicate_methods(class)?;
+    check_constructor_delegation(class)?;
+
+    let imports = class_table::import_map(file);
+    let this_fqcn = class_table::fqcn_of(file);
 
     let mut sigs: HashMap<String, MethodSig> = HashMap::new();
-    for m in &file.class.methods {
-        let param_types: Vec<Type> = m.params.iter().map(|p| p.ty.clone()).collect();
-        sigs.insert(m.name.clone(), (param_types, m.return_type.clone()));
+    for m in &class.methods {
+        if m.is_static && m.kind == MethodKind::Normal {
+            let param_types: Vec<Type> = m.params.iter().map(|p| p.ty.clone()).collect();
+            sigs.insert(m.name.clone(), (param_types, m.return_type.clone()));
+        }
     }
 
-    for method in &file.class.methods {
-        check_method(method, &sigs)?;
+    for method in &class.methods {
+        check_method(method, &sigs, classes, &imports, &this_fqcn)?;
     }
     Ok(())
 }
 
 /// compiler.md § Duplicate definitions — E041. Signature = name + parameter
-/// types only; return type does not distinguish methods.
+/// types only; return type does not distinguish methods. Applies equally to
+/// overloaded constructors (all named `<construct>`).
 fn check_duplicate_methods(class: &ClassDecl) -> Result<(), SemaError> {
     for i in 0..class.methods.len() {
         for j in (i + 1)..class.methods.len() {
@@ -54,17 +70,70 @@ fn check_duplicate_methods(class: &ClassDecl) -> Result<(), SemaError> {
     Ok(())
 }
 
-fn check_method(method: &MethodDecl, sigs: &HashMap<String, MethodSig>) -> Result<(), SemaError> {
+/// compiler.md § Constructor delegation — `this(...)` must be the first
+/// statement of a constructor (E045), and delegation chains must not be
+/// cyclic (E046). Constructor overload resolution here is arity-only,
+/// matching nl-codegen's best-effort resolution for this phase.
+fn check_constructor_delegation(class: &ClassDecl) -> Result<(), SemaError> {
+    let ctors: Vec<&MethodDecl> = class
+        .methods
+        .iter()
+        .filter(|m| m.kind == MethodKind::Constructor)
+        .collect();
+
+    for ctor in &ctors {
+        for (i, stmt) in ctor.body.iter().enumerate() {
+            if matches!(stmt, Stmt::ThisCall(_)) && i != 0 {
+                return Err(SemaError::ThisCallNotFirst);
+            }
+        }
+    }
+
+    for start in 0..ctors.len() {
+        let mut current = start;
+        let mut visited = HashSet::new();
+        loop {
+            if !visited.insert(current) {
+                return Err(SemaError::DelegationCycle(class.name.clone()));
+            }
+            let Some(Stmt::ThisCall(args)) = ctors[current].body.first() else {
+                break;
+            };
+            let argc = args.len();
+            let Some(next) = ctors.iter().position(|c| c.params.len() == argc) else {
+                break;
+            };
+            current = next;
+        }
+    }
+    Ok(())
+}
+
+fn check_method(
+    method: &MethodDecl,
+    sigs: &HashMap<String, MethodSig>,
+    classes: &ClassTable,
+    imports: &HashMap<String, String>,
+    this_fqcn: &str,
+) -> Result<(), SemaError> {
+    let this_ty = if method.is_static {
+        None
+    } else {
+        Some(Type::Named(this_fqcn.to_string()))
+    };
     let mut checker = MethodChecker {
         sigs,
+        classes,
+        imports,
+        this_ty,
         scopes: Vec::new(),
         next_id: 0,
-        return_ty: method.return_type.clone(),
+        return_ty: class_table::resolve_type(&method.return_type, imports),
     };
     checker.push_scope();
     let mut assigned = HashSet::new();
     for param in &method.params {
-        let id = checker.declare(&param.name, param.ty.clone());
+        let id = checker.declare(&param.name, class_table::resolve_type(&param.ty, imports));
         assigned.insert(id);
     }
     checker.check_stmts(&method.body, assigned)?;
@@ -83,6 +152,12 @@ struct VarEntry {
 /// nothing can reference an out-of-scope name again anyway.
 struct MethodChecker<'a> {
     sigs: &'a HashMap<String, MethodSig>,
+    classes: &'a ClassTable,
+    imports: &'a HashMap<String, String>,
+    /// `Some(Type::Named(fqcn))` inside an instance method/constructor,
+    /// `None` in a static context (where `this` isn't valid — not yet
+    /// enforced as a hard error, E040 lands with static-context checks).
+    this_ty: Option<Type>,
     scopes: Vec<HashMap<String, VarEntry>>,
     next_id: u32,
     return_ty: Type,
@@ -114,6 +189,32 @@ impl<'a> MethodChecker<'a> {
             }
         }
         None
+    }
+
+    fn resolve_ty(&self, ty: &Type) -> Type {
+        class_table::resolve_type(ty, self.imports)
+    }
+
+    fn class_fqcn(&self, name: &str) -> String {
+        self.imports.get(name).cloned().unwrap_or_else(|| name.to_string())
+    }
+
+    fn field_ty(&self, fqcn: &str, name: &str) -> Option<Type> {
+        self.classes
+            .get(fqcn)?
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.ty.clone())
+    }
+
+    fn method_return_ty(&self, fqcn: &str, name: &str, argc: usize) -> Option<Type> {
+        self.classes
+            .get(fqcn)?
+            .methods
+            .iter()
+            .find(|m| m.name == name && m.params.len() == argc)
+            .map(|m| m.return_ty.clone())
     }
 
     /// Checks a block in its own scope. Returns the set of variables
@@ -152,13 +253,19 @@ impl<'a> MethodChecker<'a> {
                 self.check_expr(expr, &mut assigned)?;
                 Ok((assigned, false))
             }
+            Stmt::ThisCall(args) => {
+                for a in args {
+                    self.check_expr(a, &mut assigned)?;
+                }
+                Ok((assigned, false))
+            }
             Stmt::VarDecl { ty, name, init } => {
                 let value_ty = match init {
                     Some(e) => Some(self.check_expr(e, &mut assigned)?),
                     None => None,
                 };
                 let declared_ty = match (ty, &value_ty) {
-                    (Some(t), _) => t.clone(),
+                    (Some(t), _) => self.resolve_ty(t),
                     (None, Some(v)) => v.clone(),
                     (None, None) => return Err(SemaError::AutoWithoutInitializer),
                 };
@@ -223,10 +330,26 @@ impl<'a> MethodChecker<'a> {
         if matches!(value_ty, Type::NullT) && !types::is_nullable(target_ty) {
             return Err(SemaError::NullToNonNullable(types::display(target_ty)));
         }
+        if self.is_object_assignable(value_ty, target_ty) {
+            return Ok(());
+        }
         if !types::is_assignable(value_ty, target_ty) {
             return Err(SemaError::NotAssignable(types::display(value_ty), types::display(target_ty)));
         }
         Ok(())
+    }
+
+    /// `types::is_assignable` only knows structural/primitive rules; it has
+    /// no notion of interfaces. A class value is also assignable to any
+    /// interface type it directly `implements` (compiler.md's subtyping for
+    /// reference types) — checked separately here since it needs
+    /// `self.classes`. No transitivity through interface-`extends` or class
+    /// inheritance (out of scope this phase).
+    fn is_object_assignable(&self, value_ty: &Type, target_ty: &Type) -> bool {
+        let (Type::Named(from), Type::Named(to)) = (value_ty, target_ty) else {
+            return false;
+        };
+        from == to || self.classes.get(from).is_some_and(|info| info.implements.iter().any(|i| i == to))
     }
 
     fn check_expr(&mut self, expr: &Expr, assigned: &mut HashSet<u32>) -> Result<Type, SemaError> {
@@ -236,6 +359,10 @@ impl<'a> MethodChecker<'a> {
             Expr::BoolLit(_) => Ok(Type::Bool),
             Expr::StringLit(_) => Ok(Type::StringT),
             Expr::NullLit => Ok(Type::NullT),
+            // Unresolved (`this` outside an instance method): no dedicated
+            // E-code yet, deferred to nl-codegen (E040 lands with static
+            // context checks).
+            Expr::This => Ok(self.this_ty.clone().unwrap_or(Type::Void)),
             Expr::Ident(name) => {
                 // Unresolved names have no dedicated E-code in compiler.md;
                 // nl-codegen already rejects them, so just defer to it here.
@@ -247,15 +374,7 @@ impl<'a> MethodChecker<'a> {
                 }
                 Ok(ty)
             }
-            Expr::Assign(name, value) => {
-                let value_ty = self.check_expr(value, assigned)?;
-                let Some((id, declared_ty)) = self.resolve(name) else {
-                    return Ok(value_ty);
-                };
-                self.check_assignable(&value_ty, &declared_ty)?;
-                assigned.insert(id);
-                Ok(declared_ty)
-            }
+            Expr::Assign(target, value) => self.check_assign(target, value, assigned),
             Expr::Call(name, args) => {
                 let mut arg_types = Vec::with_capacity(args.len());
                 for a in args {
@@ -271,6 +390,52 @@ impl<'a> MethodChecker<'a> {
                     }
                 }
                 Ok(return_ty.clone())
+            }
+            Expr::New(class_name, args) => {
+                for a in args {
+                    self.check_expr(a, assigned)?;
+                }
+                Ok(Type::Named(self.class_fqcn(class_name)))
+            }
+            Expr::NewArray(elem_ty, size) => {
+                let size_ty = self.check_expr(size, assigned)?;
+                if !types::is_numeric(&size_ty) {
+                    // No dedicated E-code for a non-int array size yet;
+                    // nl-codegen rejects it precisely.
+                }
+                Ok(Type::Array(Box::new(self.resolve_ty(elem_ty))))
+            }
+            Expr::FieldAccess(target, name) => {
+                let target_ty = self.check_expr(target, assigned)?;
+                let Type::Named(fqcn) = &target_ty else {
+                    return Ok(Type::Void);
+                };
+                Ok(self.field_ty(fqcn, name).unwrap_or(Type::Void))
+            }
+            Expr::MethodCall(target, name, args) => {
+                let target_ty = self.check_expr(target, assigned)?;
+                let mut arg_types = Vec::with_capacity(args.len());
+                for a in args {
+                    arg_types.push(self.check_expr(a, assigned)?);
+                }
+                match &target_ty {
+                    Type::Array(_) if name == "length" && args.is_empty() => Ok(Type::Int),
+                    Type::Named(fqcn) => Ok(self.method_return_ty(fqcn, name, args.len()).unwrap_or(Type::Void)),
+                    _ => Ok(Type::Void),
+                }
+            }
+            Expr::Index(target, index) => {
+                let target_ty = self.check_expr(target, assigned)?;
+                let index_ty = self.check_expr(index, assigned)?;
+                let _ = index_ty;
+                match target_ty {
+                    Type::Array(elem) => Ok(*elem),
+                    _ => Ok(Type::Void),
+                }
+            }
+            Expr::InstanceOf(target, _type_name) => {
+                self.check_expr(target, assigned)?;
+                Ok(Type::Bool)
             }
             Expr::PostIncr(name) | Expr::PostDecr(name) => {
                 let Some((id, ty)) = self.resolve(name) else {
@@ -291,6 +456,42 @@ impl<'a> MethodChecker<'a> {
                 }
             }
             Expr::Binary(op, lhs, rhs) => self.check_binary(*op, lhs, rhs, assigned),
+        }
+    }
+
+    fn check_assign(&mut self, target: &LValue, value: &Expr, assigned: &mut HashSet<u32>) -> Result<Type, SemaError> {
+        match target {
+            LValue::Local(name) => {
+                let value_ty = self.check_expr(value, assigned)?;
+                let Some((id, declared_ty)) = self.resolve(name) else {
+                    return Ok(value_ty);
+                };
+                self.check_assignable(&value_ty, &declared_ty)?;
+                assigned.insert(id);
+                Ok(declared_ty)
+            }
+            LValue::Field(target_expr, name) => {
+                let target_ty = self.check_expr(target_expr, assigned)?;
+                let value_ty = self.check_expr(value, assigned)?;
+                let Type::Named(fqcn) = &target_ty else {
+                    return Ok(value_ty);
+                };
+                let Some(field_ty) = self.field_ty(fqcn, name) else {
+                    return Ok(value_ty);
+                };
+                self.check_assignable(&value_ty, &field_ty)?;
+                Ok(field_ty)
+            }
+            LValue::Index(target_expr, index_expr) => {
+                let target_ty = self.check_expr(target_expr, assigned)?;
+                self.check_expr(index_expr, assigned)?;
+                let value_ty = self.check_expr(value, assigned)?;
+                let Type::Array(elem) = target_ty else {
+                    return Ok(value_ty);
+                };
+                self.check_assignable(&value_ty, &elem)?;
+                Ok(*elem)
+            }
         }
     }
 
@@ -334,7 +535,7 @@ impl<'a> MethodChecker<'a> {
             BinOp::Eq | BinOp::Ne => {
                 if matches!(lty, Type::NullT) || matches!(rty, Type::NullT) {
                     let other = if matches!(lty, Type::NullT) { rty } else { lty };
-                    if matches!(other, Type::NullT) || types::is_nullable(other) {
+                    if matches!(other, Type::NullT) || types::is_nullable(other) || matches!(other, Type::Named(_) | Type::Array(_)) {
                         return Ok(Type::Bool);
                     }
                     return Err(SemaError::BadBinaryOperator(op_symbol(op), types::display(lty), types::display(rty)));

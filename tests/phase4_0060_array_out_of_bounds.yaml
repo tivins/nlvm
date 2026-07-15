@@ -1,0 +1,16 @@
+---
+title: "array index out of bounds surfaces as an unhandled IndexOutOfBoundsException"
+file_separator: "#NLFILE"
+expected_exit_code: 1
+expected_stdout: ""
+expected_stderr: "Unhandled exception: IndexOutOfBoundsException: index 3, length 3"
+---
+
+#NLFILE phase4/arrays_oob/Main.nl
+namespace phase4.arrays_oob;
+class Main {
+	public static int main(string[] args) {
+		int[] a = new int[3];
+		return a[3];
+	}
+}

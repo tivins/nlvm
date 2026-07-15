@@ -1,6 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{bail, Context, Result};
+use nl_syntax::ast::SourceItem;
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -30,29 +31,31 @@ fn main() -> Result<()> {
     std::fs::create_dir_all(&output_dir)
         .with_context(|| format!("creating output directory {}", output_dir.display()))?;
 
+    // Every source is compiled together as one program so classes/interfaces
+    // defined in different files can reference each other (`new`, field
+    // access, instance method calls) — see nl_codegen::compile_program.
+    let mut files = Vec::with_capacity(sources.len());
     for source_path in &sources {
-        compile_one(source_path, &output_dir)?;
+        let src = std::fs::read_to_string(source_path)
+            .with_context(|| format!("reading {}", source_path.display()))?;
+        let file = nl_syntax::parse_source_file(&src)
+            .map_err(|e| anyhow::anyhow!("{}: {e}", source_path.display()))?;
+        files.push(file);
     }
 
-    Ok(())
-}
+    nl_sema::check_compile(&files).map_err(|e| anyhow::anyhow!("{e} ({})", e.code()))?;
 
-fn compile_one(source_path: &Path, output_dir: &Path) -> Result<()> {
-    let src = std::fs::read_to_string(source_path)
-        .with_context(|| format!("reading {}", source_path.display()))?;
+    let modules = nl_codegen::compile_program(&files).map_err(|e| anyhow::anyhow!("{e}"))?;
 
-    let file = nl_syntax::parse_source_file(&src)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", source_path.display()))?;
-
-    nl_sema::check_compile(std::slice::from_ref(&file))
-        .map_err(|e| anyhow::anyhow!("{}: {e} ({})", source_path.display(), e.code()))?;
-
-    let module = nl_codegen::compile_source_file(&file)
-        .map_err(|e| anyhow::anyhow!("{}: {e}", source_path.display()))?;
-
-    let out_path = output_dir.join(format!("{}.nlm", file.class.name));
-    std::fs::write(&out_path, module.encode())
-        .with_context(|| format!("writing {}", out_path.display()))?;
+    for (file, module) in files.iter().zip(&modules) {
+        let name = match &file.item {
+            SourceItem::Class(c) => &c.name,
+            SourceItem::Interface(i) => &i.name,
+        };
+        let out_path = output_dir.join(format!("{name}.nlm"));
+        std::fs::write(&out_path, module.encode())
+            .with_context(|| format!("writing {}", out_path.display()))?;
+    }
 
     Ok(())
 }

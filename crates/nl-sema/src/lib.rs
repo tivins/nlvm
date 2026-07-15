@@ -1,25 +1,27 @@
 mod checker;
+mod class_table;
 pub mod error;
 mod types;
 
 use std::collections::HashSet;
 
-use nl_syntax::ast::{SourceFile, Type, Visibility};
+use nl_syntax::ast::{SourceFile, SourceItem, Type, Visibility};
 
 pub use error::SemaError;
 
 /// General semantic checks that apply to every program (compile-only or
 /// run): definite assignment (E001), null safety (E003/E004), `auto`
 /// deduction (E005), string concatenation (E008), operator compatibility
-/// (E009), duplicate methods/classes (E041/E042). See compiler.md. Scoped to
-/// what nl-codegen currently compiles (static methods, single class per
-/// file, no cross-class calls) — the remaining checks from the 49-code list
-/// land alongside the language features (objects, exceptions, templates,
-/// ...) they depend on, in later phases.
+/// (E009), duplicate methods/classes (E041/E042), constructor delegation
+/// (E045/E046). See compiler.md. Cross-file class/field/method references
+/// (objects, `new`, arrays, interfaces — milestone 5) are checked leniently:
+/// an unresolved class/field/method defers to nl-codegen's harder error,
+/// same as unresolved calls already did before this phase.
 pub fn check_compile(files: &[SourceFile]) -> Result<(), SemaError> {
     check_duplicate_classes(files)?;
+    let classes = class_table::build_class_table(files);
     for file in files {
-        checker::check_source_file(file)?;
+        checker::check_source_file(file, &classes)?;
     }
     Ok(())
 }
@@ -27,11 +29,7 @@ pub fn check_compile(files: &[SourceFile]) -> Result<(), SemaError> {
 fn check_duplicate_classes(files: &[SourceFile]) -> Result<(), SemaError> {
     let mut seen = HashSet::new();
     for file in files {
-        let fqcn = if file.namespace.is_empty() {
-            file.class.name.clone()
-        } else {
-            format!("{}.{}", file.namespace.join("."), file.class.name)
-        };
+        let fqcn = class_table::fqcn_of(file);
         if !seen.insert(fqcn.clone()) {
             return Err(SemaError::DuplicateClass(fqcn));
         }
@@ -44,7 +42,10 @@ fn check_duplicate_classes(files: &[SourceFile]) -> Result<(), SemaError> {
 pub fn check_entry_point(files: &[SourceFile]) -> Result<(), SemaError> {
     let mut candidates = Vec::new();
     for file in files {
-        for method in &file.class.methods {
+        let SourceItem::Class(class) = &file.item else {
+            continue;
+        };
+        for method in &class.methods {
             if method.name == "main" {
                 candidates.push(method);
             }

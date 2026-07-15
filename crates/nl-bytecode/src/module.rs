@@ -108,6 +108,22 @@ impl Module {
         })
     }
 
+    pub fn find_field(&self, name: &str) -> Option<&FieldDescriptor> {
+        self.fields
+            .iter()
+            .find(|f| self.constant_pool.utf8_at(f.name_index) == Some(name))
+    }
+
+    /// Like `find_method`, but also matches on the method descriptor string
+    /// (e.g. `"(int, string) -> void"`) — needed once a name can resolve to
+    /// several overloads (constructors, overloaded instance methods).
+    pub fn find_method_by_descriptor(&self, name: &str, descriptor: &str) -> Option<&MethodDescriptor> {
+        self.methods.iter().find(|m| {
+            self.constant_pool.utf8_at(m.name_index) == Some(name)
+                && self.constant_pool.type_desc_at(m.descriptor_index) == Some(descriptor)
+        })
+    }
+
     pub fn encode(&self) -> Vec<u8> {
         let mut buf = Vec::new();
         buf.extend_from_slice(&MAGIC.to_be_bytes());

@@ -1,9 +1,18 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
+/// A heap-allocated class instance — see nlvm-specs/docs/vm.md § Object
+/// layout. Fields are keyed by name rather than a declaration-order offset:
+/// simpler than replicating the exact header/offset layout, and equivalent
+/// as far as anything observable (no code inspects raw memory layout).
+#[derive(Debug)]
+pub struct Object {
+    pub class_name: String,
+    pub fields: HashMap<String, Value>,
+}
+
 /// Tagged runtime value — see nlvm-specs/docs/vm.md § Value representation.
-/// `Array` anticipates milestone 5 (object model); full heap objects with
-/// class instances land later.
 #[derive(Debug, Clone)]
 pub enum Value {
     Null,
@@ -13,6 +22,7 @@ pub enum Value {
     Byte(u8),
     Str(Rc<String>),
     Array(Rc<RefCell<Vec<Value>>>),
+    Object(Rc<RefCell<Object>>),
 }
 
 impl Value {
@@ -25,6 +35,7 @@ impl Value {
             Value::Byte(_) => "byte",
             Value::Str(_) => "string",
             Value::Array(_) => "array",
+            Value::Object(_) => "object",
         }
     }
 
@@ -62,6 +73,12 @@ impl Value {
             Value::Byte(v) => v.to_string(),
             Value::Str(s) => (**s).clone(),
             Value::Array(_) => "[array]".to_string(),
+            // Stringable dispatch (calling `toString()`) isn't implemented
+            // this phase; nl-codegen never emits TO_STRING for an object
+            // operand (string concatenation only accepts primitives/strings
+            // — compiler.md's Stringable check is future work), so this is
+            // an unreachable fallback, not a real code path.
+            Value::Object(obj) => format!("[object {}]", obj.borrow().class_name),
         }
     }
 }

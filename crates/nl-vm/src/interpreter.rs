@@ -1,18 +1,55 @@
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use nl_bytecode::{ConstantPoolEntry, MethodDescriptor, Module, Opcode};
 
 use crate::error::VmError;
-use crate::value::Value;
+use crate::program::Program;
+use crate::value::{Object, Value};
 
-#[allow(unused_assignments)] // GOTO/GOTO_W always overwrite `pc` right after reading their operand
-pub fn call_static(module: &Module, method: &MethodDescriptor, args: Vec<Value>) -> Result<Option<Value>, VmError> {
+pub fn call_static(
+    program: &Program,
+    module: &Module,
+    method: &MethodDescriptor,
+    args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     let mut locals = vec![Value::Null; method.max_locals as usize];
     for (i, arg) in args.into_iter().enumerate() {
         if i < locals.len() {
             locals[i] = arg;
         }
     }
+    run_frame(program, module, method, locals)
+}
+
+/// Shared by `INVOKE_INSTANCE` and `INVOKE_SPECIAL`: local 0 is the receiver
+/// (`this`), parameters follow starting at local 1 — vm.md § Call frame and
+/// operand stack.
+pub fn call_instance(
+    program: &Program,
+    module: &Module,
+    method: &MethodDescriptor,
+    receiver: Value,
+    args: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
+    let mut locals = vec![Value::Null; method.max_locals as usize];
+    locals[0] = receiver;
+    for (i, arg) in args.into_iter().enumerate() {
+        if i + 1 < locals.len() {
+            locals[i + 1] = arg;
+        }
+    }
+    run_frame(program, module, method, locals)
+}
+
+#[allow(unused_assignments)] // GOTO/GOTO_W always overwrite `pc` right after reading their operand
+fn run_frame(
+    program: &Program,
+    module: &Module,
+    method: &MethodDescriptor,
+    mut locals: Vec<Value>,
+) -> Result<Option<Value>, VmError> {
     let mut stack: Vec<Value> = Vec::with_capacity(method.max_stack as usize);
     let code = &method.code;
     let mut pc: usize = 0;
@@ -268,18 +305,192 @@ pub fn call_static(module: &Module, method: &MethodDescriptor, args: Vec<Value>)
                 pc = (opcode_pc as i64 + offset as i64) as usize;
             }
 
+            Opcode::New => {
+                let class_index = read_u16!();
+                let fqcn = resolve_class_name(module, class_index)?.to_string();
+                let target_module = program
+                    .get(&fqcn)
+                    .ok_or_else(|| VmError::MethodNotFound(fqcn.clone()))?;
+                let mut fields = HashMap::with_capacity(target_module.fields.len());
+                for f in &target_module.fields {
+                    let name = target_module
+                        .constant_pool
+                        .utf8_at(f.name_index)
+                        .ok_or(VmError::Malformed("bad field name index"))?
+                        .to_string();
+                    let type_desc = target_module
+                        .constant_pool
+                        .type_desc_at(f.type_index)
+                        .ok_or(VmError::Malformed("bad field type index"))?;
+                    fields.insert(name, default_value_for(type_desc));
+                }
+                stack.push(Value::Object(Rc::new(RefCell::new(Object {
+                    class_name: fqcn,
+                    fields,
+                }))));
+            }
+            Opcode::InstanceOf => {
+                let class_index = read_u16!();
+                let target_fqcn = resolve_class_name(module, class_index)?;
+                let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                let result = match &v {
+                    Value::Object(obj) => {
+                        let runtime_class = obj.borrow().class_name.clone();
+                        runtime_class == target_fqcn || implements_interface(program, &runtime_class, target_fqcn)
+                    }
+                    _ => false,
+                };
+                stack.push(Value::Bool(result));
+            }
+            Opcode::CheckCast => {
+                return Err(VmError::Unsupported(format!("{op:?} lands in a later phase")));
+            }
+
+            Opcode::NewArray => {
+                let type_index = read_u16!();
+                let elem_desc = module.constant_pool.type_desc_at(type_index).unwrap_or("");
+                let default = default_value_for(elem_desc);
+                let size = pop_int(&mut stack)?;
+                if size < 0 {
+                    return Err(VmError::Malformed("negative array size"));
+                }
+                stack.push(Value::Array(Rc::new(RefCell::new(vec![default; size as usize]))));
+            }
+            Opcode::NewArrayInit => {
+                return Err(VmError::Unsupported(format!("{op:?} lands in a later phase")));
+            }
+            Opcode::ArrayLoad => {
+                let (arr, idx) = pop2(&mut stack)?;
+                let Value::Array(arr) = arr else {
+                    return Err(VmError::Malformed("ARRAY_LOAD on non-array"));
+                };
+                let idx = idx.as_int().ok_or(VmError::Malformed("array index must be int"))?;
+                let arr_ref = arr.borrow();
+                if idx < 0 || idx as usize >= arr_ref.len() {
+                    return Err(VmError::IndexOutOfBounds { index: idx, length: arr_ref.len() });
+                }
+                stack.push(arr_ref[idx as usize].clone());
+            }
+            Opcode::ArrayStore => {
+                let value = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                let idx = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                let arr = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                let Value::Array(arr) = arr else {
+                    return Err(VmError::Malformed("ARRAY_STORE on non-array"));
+                };
+                let idx = idx.as_int().ok_or(VmError::Malformed("array index must be int"))?;
+                let mut arr_mut = arr.borrow_mut();
+                if idx < 0 || idx as usize >= arr_mut.len() {
+                    return Err(VmError::IndexOutOfBounds { index: idx, length: arr_mut.len() });
+                }
+                arr_mut[idx as usize] = value;
+            }
+            Opcode::ArrayLength => {
+                let v = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                let Value::Array(arr) = v else {
+                    return Err(VmError::Malformed("ARRAY_LENGTH on non-array"));
+                };
+                stack.push(Value::Int(arr.borrow().len() as i64));
+            }
+
+            Opcode::GetField => {
+                let idx = read_u16!();
+                let (_, field_name, _) = resolve_field_ref(module, idx)?;
+                let receiver = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                if receiver.is_null() {
+                    return Err(VmError::NullPointer);
+                }
+                let Value::Object(obj) = receiver else {
+                    return Err(VmError::Malformed("GET_FIELD on non-object"));
+                };
+                let value = obj.borrow().fields.get(&field_name).cloned().unwrap_or(Value::Null);
+                stack.push(value);
+            }
+            Opcode::SetField => {
+                let idx = read_u16!();
+                let (_, field_name, _) = resolve_field_ref(module, idx)?;
+                let value = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                let receiver = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                if receiver.is_null() {
+                    return Err(VmError::NullPointer);
+                }
+                let Value::Object(obj) = receiver else {
+                    return Err(VmError::Malformed("SET_FIELD on non-object"));
+                };
+                obj.borrow_mut().fields.insert(field_name, value);
+            }
+            Opcode::GetStatic | Opcode::SetStatic => {
+                return Err(VmError::Unsupported(format!("{op:?} lands in a later phase")));
+            }
+
             Opcode::InvokeStatic => {
                 let method_ref_idx = read_u16!();
-                let (name, descriptor) = resolve_method_ref(module, method_ref_idx)?;
+                let (class_fqcn, name, descriptor) = resolve_method_ref(module, method_ref_idx)?;
                 let param_count = count_params(&descriptor);
                 if stack.len() < param_count {
                     return Err(VmError::Malformed("stack underflow on INVOKE_STATIC"));
                 }
                 let call_args = stack.split_off(stack.len() - param_count);
-                let target = module
-                    .find_method(&name)
+                let target_module = program
+                    .get(&class_fqcn)
+                    .ok_or_else(|| VmError::MethodNotFound(format!("{class_fqcn}.{name}")))?;
+                let target = target_module
+                    .find_method_by_descriptor(&name, &descriptor)
                     .ok_or_else(|| VmError::MethodNotFound(name.clone()))?;
-                if let Some(result) = call_static(module, target, call_args)? {
+                if let Some(result) = call_static(program, target_module, target, call_args)? {
+                    stack.push(result);
+                }
+            }
+            Opcode::InvokeInstance => {
+                let method_ref_idx = read_u16!();
+                let (_static_fqcn, name, descriptor) = resolve_method_ref(module, method_ref_idx)?;
+                let param_count = count_params(&descriptor);
+                if stack.len() < param_count + 1 {
+                    return Err(VmError::Malformed("stack underflow on INVOKE_INSTANCE"));
+                }
+                let call_args = stack.split_off(stack.len() - param_count);
+                let receiver = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                if receiver.is_null() {
+                    return Err(VmError::NullPointer);
+                }
+                // Virtual dispatch: resolve against the receiver's *runtime*
+                // class, not the static type recorded in the method ref —
+                // vm.md § Method dispatch, Instance methods.
+                let Value::Object(obj) = &receiver else {
+                    return Err(VmError::Malformed("INVOKE_INSTANCE on non-object"));
+                };
+                let runtime_class = obj.borrow().class_name.clone();
+                let target_module = program
+                    .get(&runtime_class)
+                    .ok_or_else(|| VmError::MethodNotFound(format!("{runtime_class}.{name}")))?;
+                let target = target_module
+                    .find_method_by_descriptor(&name, &descriptor)
+                    .ok_or_else(|| VmError::MethodNotFound(format!("{runtime_class}.{name}")))?;
+                if let Some(result) = call_instance(program, target_module, target, receiver, call_args)? {
+                    stack.push(result);
+                }
+            }
+            Opcode::InvokeSpecial => {
+                let method_ref_idx = read_u16!();
+                let (class_fqcn, name, descriptor) = resolve_method_ref(module, method_ref_idx)?;
+                let param_count = count_params(&descriptor);
+                if stack.len() < param_count + 1 {
+                    return Err(VmError::Malformed("stack underflow on INVOKE_SPECIAL"));
+                }
+                let call_args = stack.split_off(stack.len() - param_count);
+                let receiver = stack.pop().ok_or(VmError::Malformed("stack underflow"))?;
+                if receiver.is_null() {
+                    return Err(VmError::NullPointer);
+                }
+                // No virtual dispatch: always the exact class named in the
+                // ref (constructors, `super`/private calls in later phases).
+                let target_module = program
+                    .get(&class_fqcn)
+                    .ok_or_else(|| VmError::MethodNotFound(format!("{class_fqcn}.{name}")))?;
+                let target = target_module
+                    .find_method_by_descriptor(&name, &descriptor)
+                    .ok_or_else(|| VmError::MethodNotFound(format!("{class_fqcn}.{name}")))?;
+                if let Some(result) = call_instance(program, target_module, target, receiver, call_args)? {
                     stack.push(result);
                 }
             }
@@ -306,13 +517,42 @@ pub fn call_static(module: &Module, method: &MethodDescriptor, args: Vec<Value>)
     }
 }
 
-fn resolve_method_ref(module: &Module, idx: u16) -> Result<(String, String), VmError> {
+fn resolve_class_name(module: &Module, idx: u16) -> Result<&str, VmError> {
+    module.constant_pool.class_name_at(idx).ok_or(VmError::Malformed("bad class index"))
+}
+
+fn resolve_field_ref(module: &Module, idx: u16) -> Result<(String, String, String), VmError> {
     match module.constant_pool.get(idx) {
-        Some(ConstantPoolEntry::MethodRef {
-            name_index,
-            descriptor_index,
-            ..
-        }) => {
+        Some(ConstantPoolEntry::FieldRef { class_index, name_index, type_index }) => {
+            let class_name = module
+                .constant_pool
+                .class_name_at(*class_index)
+                .ok_or(VmError::Malformed("bad field class index"))?
+                .to_string();
+            let field_name = module
+                .constant_pool
+                .utf8_at(*name_index)
+                .ok_or(VmError::Malformed("bad field name index"))?
+                .to_string();
+            let type_desc = module
+                .constant_pool
+                .type_desc_at(*type_index)
+                .ok_or(VmError::Malformed("bad field type index"))?
+                .to_string();
+            Ok((class_name, field_name, type_desc))
+        }
+        _ => Err(VmError::Malformed("field_ref index does not point to a FieldRef")),
+    }
+}
+
+fn resolve_method_ref(module: &Module, idx: u16) -> Result<(String, String, String), VmError> {
+    match module.constant_pool.get(idx) {
+        Some(ConstantPoolEntry::MethodRef { class_index, name_index, descriptor_index }) => {
+            let class_name = module
+                .constant_pool
+                .class_name_at(*class_index)
+                .ok_or(VmError::Malformed("bad method class index"))?
+                .to_string();
             let name = module
                 .constant_pool
                 .utf8_at(*name_index)
@@ -323,10 +563,34 @@ fn resolve_method_ref(module: &Module, idx: u16) -> Result<(String, String), VmE
                 .type_desc_at(*descriptor_index)
                 .ok_or(VmError::Malformed("bad method descriptor index"))?
                 .to_string();
-            Ok((name, descriptor))
+            Ok((class_name, name, descriptor))
         }
         _ => Err(VmError::Malformed("method_ref index does not point to a MethodRef")),
     }
+}
+
+/// Default value for a field/array-element type descriptor — specs.md §
+/// Null, initialization, and default values.
+fn default_value_for(type_desc: &str) -> Value {
+    match type_desc {
+        "int" => Value::Int(0),
+        "float" => Value::Float(0.0),
+        "bool" => Value::Bool(false),
+        "byte" => Value::Byte(0),
+        "string" => Value::Str(Rc::new(String::new())),
+        // Arrays, objects, and unions all default to `null`.
+        _ => Value::Null,
+    }
+}
+
+fn implements_interface(program: &Program, class_fqcn: &str, target_fqcn: &str) -> bool {
+    let Some(module) = program.get(class_fqcn) else {
+        return false;
+    };
+    module
+        .interfaces
+        .iter()
+        .any(|&i| module.constant_pool.class_name_at(i) == Some(target_fqcn))
 }
 
 fn count_params(descriptor: &str) -> usize {
@@ -396,6 +660,7 @@ fn values_equal(a: &Value, b: &Value) -> bool {
         (Value::Byte(x), Value::Byte(y)) => x == y,
         (Value::Str(x), Value::Str(y)) => x == y,
         (Value::Array(x), Value::Array(y)) => Rc::ptr_eq(x, y),
+        (Value::Object(x), Value::Object(y)) => Rc::ptr_eq(x, y),
         _ => false,
     }
 }

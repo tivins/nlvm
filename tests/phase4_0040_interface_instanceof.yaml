@@ -1,0 +1,50 @@
+---
+title: "interfaces, 'implements', and 'instanceof' against both a class and an interface"
+file_separator: "#NLFILE"
+expected_exit_code: 111
+expected_stdout: ""
+---
+
+#NLFILE phase4/shapes/Shape.nl
+namespace phase4.shapes;
+interface Shape {}
+
+#NLFILE phase4/shapes/Circle.nl
+namespace phase4.shapes;
+use phase4.shapes.Shape;
+class Circle implements Shape {
+	public construct() {}
+}
+
+#NLFILE phase4/shapes/Square.nl
+namespace phase4.shapes;
+use phase4.shapes.Shape;
+class Square implements Shape {
+	public construct() {}
+}
+
+#NLFILE phase4/shapes/Main.nl
+namespace phase4.shapes;
+use phase4.shapes.Shape;
+use phase4.shapes.Circle;
+use phase4.shapes.Square;
+class Main {
+	public static int main(string[] args) {
+		Circle c = new Circle();
+		Shape s = c;
+		int result = 0;
+		if (c instanceof Circle) {
+			result = result + 1;
+		}
+		if (s instanceof Circle) {
+			result = result + 10;
+		}
+		if (s instanceof Shape) {
+			result = result + 100;
+		}
+		if (s instanceof Square) {
+			result = result + 1000;
+		}
+		return result;
+	}
+}

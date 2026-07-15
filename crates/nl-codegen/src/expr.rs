@@ -1,11 +1,13 @@
 use std::collections::HashMap;
 
 use nl_bytecode::{ConstantPool, Opcode};
-use nl_syntax::ast::{BinOp, Expr, Type, UnOp};
+use nl_syntax::ast::{BinOp, Expr, LValue, Type, UnOp};
 
+use crate::class_table::{find_ctor, find_method, resolve_type, ClassInfo};
 use crate::error::CodegenError;
+use crate::type_desc::{method_descriptor, type_descriptor};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ExprTy {
     Int,
     Float,
@@ -14,9 +16,10 @@ pub enum ExprTy {
     StringT,
     Null,
     Void,
-    /// Array/class types — not yet representable (milestone 5); values of
-    /// this type flow through identifiers/calls but reject further use.
-    Other,
+    /// Declared/static class type, holding its FQCN.
+    Object(String),
+    /// Array element type.
+    Array(Box<ExprTy>),
 }
 
 pub fn expr_ty_of(ty: &Type) -> ExprTy {
@@ -28,7 +31,10 @@ pub fn expr_ty_of(ty: &Type) -> ExprTy {
         Type::StringT => ExprTy::StringT,
         Type::Void => ExprTy::Void,
         Type::NullT => ExprTy::Null,
-        Type::Array(_) | Type::Named(_) => ExprTy::Other,
+        Type::Array(inner) => ExprTy::Array(Box::new(expr_ty_of(inner))),
+        // Callers are expected to have already resolved `Named` to an FQCN
+        // via `class_table::resolve_type` before reaching here.
+        Type::Named(name) => ExprTy::Object(name.clone()),
         // Values are dynamically tagged at runtime (vm.md § Value
         // representation), so a union collapses to the `ExprTy` of its first
         // non-null member for codegen purposes — nullability itself is
@@ -52,7 +58,7 @@ pub struct MethodSig {
     pub method_ref_index: u16,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct LocalSlot {
     pub index: u16,
     pub ty: ExprTy,
@@ -66,7 +72,11 @@ pub(crate) struct LoopCtx {
 pub struct Emitter<'a> {
     pub code: Vec<u8>,
     pub cp: &'a mut ConstantPool,
-    pub(crate) methods: &'a HashMap<String, MethodSig>,
+    pub(crate) static_sigs: &'a HashMap<String, MethodSig>,
+    pub(crate) classes: &'a HashMap<String, ClassInfo>,
+    pub(crate) imports: &'a HashMap<String, String>,
+    pub(crate) this_class: u16,
+    pub(crate) this_fqcn: String,
     depth: i32,
     max_depth: i32,
     pub(crate) scopes: Vec<HashMap<String, LocalSlot>>,
@@ -76,11 +86,22 @@ pub struct Emitter<'a> {
 }
 
 impl<'a> Emitter<'a> {
-    pub fn new(cp: &'a mut ConstantPool, methods: &'a HashMap<String, MethodSig>) -> Self {
+    pub fn new(
+        cp: &'a mut ConstantPool,
+        static_sigs: &'a HashMap<String, MethodSig>,
+        classes: &'a HashMap<String, ClassInfo>,
+        imports: &'a HashMap<String, String>,
+        this_class: u16,
+        this_fqcn: String,
+    ) -> Self {
         Self {
             code: Vec::new(),
             cp,
-            methods,
+            static_sigs,
+            classes,
+            imports,
+            this_class,
+            this_fqcn,
             depth: 0,
             max_depth: 0,
             scopes: Vec::new(),
@@ -159,10 +180,6 @@ impl<'a> Emitter<'a> {
         self.op_u16(Opcode::Store, local_index, -1);
     }
 
-    pub(crate) fn emit_i2f(&mut self) {
-        self.op(Opcode::I2F, 0);
-    }
-
     pub(crate) fn emit_goto_to(&mut self, target: usize) {
         let opcode_pc = self.code.len();
         self.code.push(Opcode::Goto as u8);
@@ -192,13 +209,28 @@ impl<'a> Emitter<'a> {
         index
     }
 
+    /// A compiler-internal scratch local (name can never collide with a
+    /// user identifier — `$` doesn't lex as an identifier character) used to
+    /// hold an intermediate value while emitting field/array-element
+    /// assignment (which must leave the assigned value on the stack as the
+    /// expression's own result, after popping the receiver/index/value for
+    /// SET_FIELD/ARRAY_STORE).
+    fn declare_scratch_local(&mut self, ty: ExprTy) -> u16 {
+        let name = format!("$tmp{}", self.next_local);
+        self.declare_local(name, ty)
+    }
+
     fn lookup_local(&self, name: &str) -> Result<LocalSlot, CodegenError> {
         for scope in self.scopes.iter().rev() {
             if let Some(slot) = scope.get(name) {
-                return Ok(*slot);
+                return Ok(slot.clone());
             }
         }
         Err(CodegenError::Unsupported(format!("undefined variable '{name}'")))
+    }
+
+    fn resolve_class_name(&self, name: &str) -> String {
+        self.imports.get(name).cloned().unwrap_or_else(|| name.to_string())
     }
 
     /// Compiles `expr` as a statement: evaluates it and discards any value
@@ -243,13 +275,23 @@ impl<'a> Emitter<'a> {
                 self.op(Opcode::ConstNull, 1);
                 Ok(ExprTy::Null)
             }
+            Expr::This => {
+                self.op_u16(Opcode::Load, 0, 1);
+                Ok(ExprTy::Object(self.this_fqcn.clone()))
+            }
             Expr::Ident(name) => {
                 let slot = self.lookup_local(name)?;
                 self.op_u16(Opcode::Load, slot.index, 1);
                 Ok(slot.ty)
             }
-            Expr::Assign(name, value) => self.compile_assign(name, value),
+            Expr::Assign(target, value) => self.compile_assign(target, value),
             Expr::Call(name, args) => self.compile_call(name, args),
+            Expr::New(class_name, args) => self.compile_new(class_name, args),
+            Expr::NewArray(elem_ty, size) => self.compile_new_array(elem_ty, size),
+            Expr::FieldAccess(target, name) => self.compile_field_access(target, name),
+            Expr::MethodCall(target, name, args) => self.compile_method_call(target, name, args),
+            Expr::Index(target, index) => self.compile_index(target, index),
+            Expr::InstanceOf(target, type_name) => self.compile_instanceof(target, type_name),
             Expr::PostIncr(name) => self.compile_incr(name, 1),
             Expr::PostDecr(name) => self.compile_incr(name, -1),
             Expr::Unary(op, inner) => self.compile_unary(*op, inner),
@@ -257,25 +299,71 @@ impl<'a> Emitter<'a> {
         }
     }
 
-    fn compile_assign(&mut self, name: &str, value: &Expr) -> Result<ExprTy, CodegenError> {
-        let slot = self.lookup_local(name)?;
-        let value_ty = self.compile_expr(value)?;
-        if slot.ty == ExprTy::Float && value_ty == ExprTy::Int {
-            self.op(Opcode::I2F, 0);
-        } else if value_ty == ExprTy::Null {
-            // Nullability was already validated by nl-sema; a `Value::Null`
-            // fits any slot regardless of its static (non-null) `ExprTy`.
-        } else if slot.ty != value_ty {
-            return Err(CodegenError::Unsupported(format!(
-                "cannot assign {value_ty:?} to variable '{name}' of type {:?}",
-                slot.ty
-            )));
+    fn compile_assign(&mut self, target: &LValue, value: &Expr) -> Result<ExprTy, CodegenError> {
+        match target {
+            LValue::Local(name) => {
+                let slot = self.lookup_local(name)?;
+                let value_ty = self.compile_expr(value)?;
+                self.coerce_value(&value_ty, &slot.ty, name)?;
+                // Leave a copy as the expression's own value (assignment is
+                // an expression, e.g. usable as `a = b = 1;`).
+                self.op(Opcode::Dup, 1);
+                self.op_u16(Opcode::Store, slot.index, -1);
+                Ok(slot.ty)
+            }
+            LValue::Field(target_expr, field_name) => {
+                let target_ty = self.compile_expr(target_expr)?;
+                let ExprTy::Object(fqcn) = &target_ty else {
+                    return Err(CodegenError::Unsupported(format!(
+                        "field access on non-object type {target_ty:?}"
+                    )));
+                };
+                let fqcn = fqcn.clone();
+                let field = self.lookup_field(&fqcn, field_name)?;
+                let field_ty = expr_ty_of(&field);
+                let value_ty = self.compile_expr(value)?;
+                self.coerce_value(&value_ty, &field_ty, field_name)?;
+                self.op(Opcode::Dup, 1);
+                let tmp = self.declare_scratch_local(field_ty.clone());
+                self.emit_store(tmp);
+                let class_index = self.cp.add_class(&fqcn);
+                let name_index = self.cp.add_utf8(field_name.clone());
+                let type_index = self.cp.add_type_desc(&type_descriptor(&field));
+                let field_ref = self.cp.add_field_ref(class_index, name_index, type_index);
+                self.op_u16(Opcode::SetField, field_ref, -2);
+                self.op_u16(Opcode::Load, tmp, 1);
+                Ok(field_ty)
+            }
+            LValue::Index(target_expr, index_expr) => {
+                let target_ty = self.compile_expr(target_expr)?;
+                let ExprTy::Array(elem) = target_ty else {
+                    return Err(CodegenError::Unsupported(format!(
+                        "indexed assignment on non-array type {target_ty:?}"
+                    )));
+                };
+                let elem_ty = *elem;
+                let index_ty = self.compile_expr(index_expr)?;
+                if index_ty != ExprTy::Int {
+                    return Err(CodegenError::Unsupported("array index must be int".to_string()));
+                }
+                let value_ty = self.compile_expr(value)?;
+                self.coerce_value(&value_ty, &elem_ty, "array element")?;
+                self.op(Opcode::Dup, 1);
+                let tmp = self.declare_scratch_local(elem_ty.clone());
+                self.emit_store(tmp);
+                self.op(Opcode::ArrayStore, -3);
+                self.op_u16(Opcode::Load, tmp, 1);
+                Ok(elem_ty)
+            }
         }
-        // Leave a copy as the expression's own value (assignment is an
-        // expression, e.g. usable as `a = b = 1;`).
-        self.op(Opcode::Dup, 1);
-        self.op_u16(Opcode::Store, slot.index, -1);
-        Ok(slot.ty)
+    }
+
+    fn lookup_field(&self, fqcn: &str, name: &str) -> Result<Type, CodegenError> {
+        self.classes
+            .get(fqcn)
+            .and_then(|c| c.fields.iter().find(|f| f.name == name))
+            .map(|f| f.ty.clone())
+            .ok_or_else(|| CodegenError::Unsupported(format!("unknown field '{name}' on '{fqcn}'")))
     }
 
     fn compile_incr(&mut self, name: &str, delta: i16) -> Result<ExprTy, CodegenError> {
@@ -292,29 +380,11 @@ impl<'a> Emitter<'a> {
 
     fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
         let sig = self
-            .methods
+            .static_sigs
             .get(name)
             .cloned()
             .ok_or_else(|| CodegenError::Unsupported(format!("call to unknown method '{name}'")))?;
-        if args.len() != sig.param_types.len() {
-            return Err(CodegenError::Unsupported(format!(
-                "'{name}' expects {} argument(s), got {}",
-                sig.param_types.len(),
-                args.len()
-            )));
-        }
-        for (arg, expected_ty) in args.iter().zip(&sig.param_types) {
-            let actual = self.compile_expr(arg)?;
-            if *expected_ty == ExprTy::Float && actual == ExprTy::Int {
-                self.op(Opcode::I2F, 0);
-            } else if actual == ExprTy::Null {
-                // Nullability was already validated by nl-sema.
-            } else if actual != *expected_ty {
-                return Err(CodegenError::Unsupported(format!(
-                    "argument to '{name}' has type {actual:?}, expected {expected_ty:?}"
-                )));
-            }
-        }
+        self.compile_call_args(args, &sig.param_types, name)?;
         let result_delta = if sig.return_ty == ExprTy::Void { 0 } else { 1 };
         self.op_u16(
             Opcode::InvokeStatic,
@@ -322,6 +392,185 @@ impl<'a> Emitter<'a> {
             result_delta - args.len() as i32,
         );
         Ok(sig.return_ty)
+    }
+
+    fn compile_new(&mut self, class_name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+        let fqcn = self.resolve_class_name(class_name);
+        let class_index = self.cp.add_class(&fqcn);
+        self.op_u16(Opcode::New, class_index, 1);
+        self.op(Opcode::Dup, 1);
+
+        let ctor = find_ctor(self.classes, &fqcn, args.len())
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "no constructor of '{fqcn}' with {} argument(s)",
+                    args.len()
+                ))
+            })?;
+        let param_tys: Vec<ExprTy> = ctor.params.iter().map(expr_ty_of).collect();
+        self.compile_call_args(args, &param_tys, &fqcn)?;
+
+        let descriptor = method_descriptor(&ctor.params, &Type::Void);
+        let name_index = self.cp.add_utf8("<construct>");
+        let descriptor_index = self.cp.add_type_desc(&descriptor);
+        let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+        self.op_u16(Opcode::InvokeSpecial, method_ref, -(1 + args.len() as i32));
+        Ok(ExprTy::Object(fqcn))
+    }
+
+    pub(crate) fn compile_this_call(&mut self, args: &[Expr]) -> Result<(), CodegenError> {
+        self.op_u16(Opcode::Load, 0, 1);
+        let ctor = find_ctor(self.classes, &self.this_fqcn, args.len())
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "no constructor of '{}' with {} argument(s) for this(...)",
+                    self.this_fqcn,
+                    args.len()
+                ))
+            })?;
+        let param_tys: Vec<ExprTy> = ctor.params.iter().map(expr_ty_of).collect();
+        self.compile_call_args(args, &param_tys, "this(...)")?;
+
+        let descriptor = method_descriptor(&ctor.params, &Type::Void);
+        let name_index = self.cp.add_utf8("<construct>");
+        let descriptor_index = self.cp.add_type_desc(&descriptor);
+        let method_ref = self.cp.add_method_ref(self.this_class, name_index, descriptor_index);
+        self.op_u16(Opcode::InvokeSpecial, method_ref, -(1 + args.len() as i32));
+        Ok(())
+    }
+
+    fn compile_new_array(&mut self, elem_ty: &Type, size: &Expr) -> Result<ExprTy, CodegenError> {
+        let size_ty = self.compile_expr(size)?;
+        if size_ty != ExprTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "array size must be int, found {size_ty:?}"
+            )));
+        }
+        let resolved_elem = resolve_type(elem_ty, self.imports);
+        let type_index = self.cp.add_type_desc(&type_descriptor(&resolved_elem));
+        self.op_u16(Opcode::NewArray, type_index, 0);
+        Ok(ExprTy::Array(Box::new(expr_ty_of(&resolved_elem))))
+    }
+
+    fn compile_field_access(&mut self, target: &Expr, name: &str) -> Result<ExprTy, CodegenError> {
+        let target_ty = self.compile_expr(target)?;
+        let ExprTy::Object(fqcn) = &target_ty else {
+            return Err(CodegenError::Unsupported(format!(
+                "field access on non-object type {target_ty:?}"
+            )));
+        };
+        let fqcn = fqcn.clone();
+        let field = self.lookup_field(&fqcn, name)?;
+        let field_ty = expr_ty_of(&field);
+        let class_index = self.cp.add_class(&fqcn);
+        let name_index = self.cp.add_utf8(name.to_string());
+        let type_index = self.cp.add_type_desc(&type_descriptor(&field));
+        let field_ref = self.cp.add_field_ref(class_index, name_index, type_index);
+        self.op_u16(Opcode::GetField, field_ref, 0);
+        Ok(field_ty)
+    }
+
+    fn compile_method_call(&mut self, target: &Expr, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+        let target_ty = self.compile_expr(target)?;
+        match &target_ty {
+            ExprTy::Array(_) if name == "length" && args.is_empty() => {
+                self.op(Opcode::ArrayLength, 0);
+                Ok(ExprTy::Int)
+            }
+            ExprTy::Object(fqcn) => {
+                let fqcn = fqcn.clone();
+                let method = find_method(self.classes, &fqcn, name, args.len())
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "unknown method '{name}' on '{fqcn}' with {} argument(s)",
+                            args.len()
+                        ))
+                    })?;
+                let param_tys: Vec<ExprTy> = method.params.iter().map(expr_ty_of).collect();
+                self.compile_call_args(args, &param_tys, name)?;
+
+                let descriptor = method_descriptor(&method.params, &method.return_ty);
+                let name_index = self.cp.add_utf8(name.to_string());
+                let descriptor_index = self.cp.add_type_desc(&descriptor);
+                // The static type's class is enough here: the VM re-resolves
+                // the receiver's *runtime* class for INVOKE_INSTANCE, so this
+                // also works when `fqcn` is an interface with no bytecode of
+                // its own (interface dispatch — vm.md § Interface dispatch).
+                let class_index = self.cp.add_class(&fqcn);
+                let method_ref = self.cp.add_method_ref(class_index, name_index, descriptor_index);
+                let return_ty = expr_ty_of(&method.return_ty);
+                let result_delta = if return_ty == ExprTy::Void { 0 } else { 1 };
+                self.op_u16(Opcode::InvokeInstance, method_ref, result_delta - args.len() as i32 - 1);
+                Ok(return_ty)
+            }
+            other => Err(CodegenError::Unsupported(format!(
+                "method call on unsupported type {other:?}"
+            ))),
+        }
+    }
+
+    fn compile_index(&mut self, target: &Expr, index: &Expr) -> Result<ExprTy, CodegenError> {
+        let target_ty = self.compile_expr(target)?;
+        let ExprTy::Array(elem) = target_ty else {
+            return Err(CodegenError::Unsupported(format!(
+                "indexing on non-array type {target_ty:?}"
+            )));
+        };
+        let index_ty = self.compile_expr(index)?;
+        if index_ty != ExprTy::Int {
+            return Err(CodegenError::Unsupported("array index must be int".to_string()));
+        }
+        self.op(Opcode::ArrayLoad, -1);
+        Ok(*elem)
+    }
+
+    fn compile_instanceof(&mut self, target: &Expr, type_name: &str) -> Result<ExprTy, CodegenError> {
+        self.compile_expr(target)?;
+        let fqcn = self.resolve_class_name(type_name);
+        let class_index = self.cp.add_class(&fqcn);
+        self.op_u16(Opcode::InstanceOf, class_index, 0);
+        Ok(ExprTy::Bool)
+    }
+
+    /// Coerces a single already-compiled value on top of the stack from
+    /// `actual` to `expected` (int -> float widening; `null` is accepted for
+    /// any type here since nullability itself is nl-sema's job). Used for
+    /// plain-assignment/initializer sites; call-argument lists use
+    /// `compile_call_args`, which applies the same rule per argument.
+    pub(crate) fn coerce_value(&mut self, actual: &ExprTy, expected: &ExprTy, what: &str) -> Result<(), CodegenError> {
+        if *expected == ExprTy::Float && *actual == ExprTy::Int {
+            self.op(Opcode::I2F, 0);
+        } else if *actual == ExprTy::Null {
+            // Nullability was already validated by nl-sema.
+        } else if matches!((actual, expected), (ExprTy::Object(_), ExprTy::Object(_))) {
+            // Interface/subtype assignability between two object types is
+            // nl-sema's job (it has the class table's `implements` lists);
+            // a `Value::Object` doesn't carry its static type at runtime, so
+            // there's nothing for codegen to enforce here either way.
+        } else if actual != expected {
+            return Err(CodegenError::Unsupported(format!(
+                "cannot assign {actual:?} to '{what}' of type {expected:?}"
+            )));
+        }
+        Ok(())
+    }
+
+    fn compile_call_args(&mut self, args: &[Expr], param_types: &[ExprTy], ctx: &str) -> Result<(), CodegenError> {
+        if args.len() != param_types.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "'{ctx}' expects {} argument(s), got {}",
+                param_types.len(),
+                args.len()
+            )));
+        }
+        for (arg, expected_ty) in args.iter().zip(param_types) {
+            let actual = self.compile_expr(arg)?;
+            self.coerce_value(&actual, expected_ty, ctx)?;
+        }
+        Ok(())
     }
 
     fn emit_int_const(&mut self, v: i64) {
@@ -401,11 +650,11 @@ impl<'a> Emitter<'a> {
         let ty_l = self.compile_expr(lhs)?;
         let ty_r = self.compile_expr(rhs)?;
 
-        // Non-numeric equality (string/bool/null/...): the VM compares
-        // tagged values directly (vm.md § Value representation) — no
-        // numeric widening applies, and nl-sema already validated that the
-        // comparison is legal.
-        if matches!(op, BinOp::Eq | BinOp::Ne) && !(is_numeric_ty(ty_l) && is_numeric_ty(ty_r)) {
+        // Non-numeric equality (string/bool/null/references/...): the VM
+        // compares tagged values directly (vm.md § Value representation) —
+        // no numeric widening applies, and nl-sema already validated that
+        // the comparison is legal.
+        if matches!(op, BinOp::Eq | BinOp::Ne) && !(is_numeric_ty(&ty_l) && is_numeric_ty(&ty_r)) {
             let opcode = if op == BinOp::Eq { Opcode::CmpEq } else { Opcode::CmpNe };
             self.op(opcode, -1);
             return Ok(ExprTy::Bool);
@@ -415,7 +664,7 @@ impl<'a> Emitter<'a> {
 
         match op {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                let opcode = arithmetic_opcode(op, numeric_ty);
+                let opcode = arithmetic_opcode(op, &numeric_ty);
                 self.op(opcode, -1);
                 Ok(numeric_ty)
             }
@@ -519,11 +768,11 @@ fn peek_type(expr: &Expr) -> Option<ExprTy> {
     }
 }
 
-fn is_numeric_ty(ty: ExprTy) -> bool {
+fn is_numeric_ty(ty: &ExprTy) -> bool {
     matches!(ty, ExprTy::Int | ExprTy::Float | ExprTy::Byte)
 }
 
-fn arithmetic_opcode(op: BinOp, ty: ExprTy) -> Opcode {
+fn arithmetic_opcode(op: BinOp, ty: &ExprTy) -> Opcode {
     match (op, ty) {
         (BinOp::Add, ExprTy::Int) => Opcode::IAdd,
         (BinOp::Sub, ExprTy::Int) => Opcode::ISub,

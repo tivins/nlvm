@@ -1,0 +1,40 @@
+---
+title: "instance methods calling other instance methods via 'this'; independent per-object state"
+file_separator: "#NLFILE"
+expected_exit_code: 5
+expected_stdout: ""
+---
+
+#NLFILE phase4/counter/Counter.nl
+namespace phase4.counter;
+class Counter {
+	private int value;
+
+	public construct() {
+		this.value = 0;
+	}
+
+	public void increment() {
+		this.value = this.value + 1;
+	}
+
+	public int incrementTwice() {
+		this.increment();
+		this.increment();
+		return this.value;
+	}
+}
+
+#NLFILE phase4/counter/Main.nl
+namespace phase4.counter;
+use phase4.counter.Counter;
+class Main {
+	public static int main(string[] args) {
+		auto c1 = new Counter();
+		auto c2 = new Counter();
+		int a = c1.incrementTwice();
+		c2.increment();
+		int b = c2.incrementTwice();
+		return a + b;
+	}
+}

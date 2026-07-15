@@ -18,6 +18,10 @@ pub enum SemaError {
     DuplicateMethod(String, String),
     #[error("E042 — Duplicate class definition '{0}'")]
     DuplicateClass(String),
+    #[error("E045 — 'this(...)' delegation call must be the first statement of the constructor")]
+    ThisCallNotFirst,
+    #[error("E046 — Constructor delegation cycle in class '{0}'")]
+    DelegationCycle(String),
 
     #[error("E027 — No 'main' method found")]
     NoMainMethod,
@@ -40,6 +44,8 @@ impl SemaError {
             SemaError::BadUnaryOperator(_, _) => "E009",
             SemaError::DuplicateMethod(_, _) => "E041",
             SemaError::DuplicateClass(_) => "E042",
+            SemaError::ThisCallNotFirst => "E045",
+            SemaError::DelegationCycle(_) => "E046",
             SemaError::NoMainMethod => "E027",
             SemaError::MultipleMainMethods => "E028",
             SemaError::BadMainSignature => "E029",
