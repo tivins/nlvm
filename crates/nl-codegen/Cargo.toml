@@ -1,0 +1,9 @@
+[package]
+name = "nl-codegen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nl-syntax.workspace = true
+nl-bytecode.workspace = true
+thiserror.workspace = true

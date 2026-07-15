@@ -1,0 +1,13 @@
+[package]
+name = "nlvm"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "nlvm"
+path = "src/main.rs"
+
+[dependencies]
+nl-vm.workspace = true
+nl-bytecode.workspace = true
+anyhow.workspace = true

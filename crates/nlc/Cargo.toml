@@ -1,0 +1,15 @@
+[package]
+name = "nlc"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "nlc"
+path = "src/main.rs"
+
+[dependencies]
+nl-syntax.workspace = true
+nl-sema.workspace = true
+nl-codegen.workspace = true
+nl-bytecode.workspace = true
+anyhow.workspace = true

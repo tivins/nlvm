@@ -1,0 +1,28 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/nl-syntax",
+    "crates/nl-sema",
+    "crates/nl-bytecode",
+    "crates/nl-codegen",
+    "crates/nl-vm",
+    "crates/nlc",
+    "crates/nlvm",
+    "crates/nl-test-runner",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+nl-syntax = { path = "crates/nl-syntax" }
+nl-sema = { path = "crates/nl-sema" }
+nl-bytecode = { path = "crates/nl-bytecode" }
+nl-codegen = { path = "crates/nl-codegen" }
+nl-vm = { path = "crates/nl-vm" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_yaml = "0.9"
+sha2 = "0.10"

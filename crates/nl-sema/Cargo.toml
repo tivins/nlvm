@@ -1,0 +1,8 @@
+[package]
+name = "nl-sema"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nl-syntax.workspace = true
+thiserror.workspace = true

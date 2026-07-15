@@ -1,0 +1,18 @@
+[package]
+name = "nl-test-runner"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "nltest"
+path = "src/main.rs"
+
+[dependencies]
+nl-syntax.workspace = true
+nl-sema.workspace = true
+nl-codegen.workspace = true
+nl-bytecode.workspace = true
+nl-vm.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+anyhow.workspace = true

@@ -1,0 +1,8 @@
+[package]
+name = "nl-vm"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+nl-bytecode.workspace = true
+thiserror.workspace = true
