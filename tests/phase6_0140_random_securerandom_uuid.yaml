@@ -1,0 +1,63 @@
+---
+title: "Phase 6 — system.Random/SecureRandom/Uuid"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "true true true true true true true true true true"
+---
+
+#NLFILE phase6/random/Main.nl
+namespace phase6.random;
+class Main {
+	public static int main(string[] args) {
+		auto r1 = new system.Random(42);
+		auto r2 = new system.Random(42);
+		int a = r1.nextInt(100);
+		int b = r2.nextInt(100);
+		bool sameSeedSameResult = (a == b);
+		bool inBounds = (a >= 0 && a < 100);
+		float f = r1.nextFloat();
+		bool floatInRange = (f >= 0.0 && f < 1.0);
+
+		auto r3 = new system.Random();
+		int c1 = r3.nextInt();
+		int c2 = r3.nextInt();
+		bool successiveDiffer = (c1 != c2);
+
+		byte[] buf = new byte[16];
+		system.SecureRandom.nextBytes(buf);
+
+		int secureBound = system.SecureRandom.nextInt(10);
+		bool secureInBounds = (secureBound >= 0 && secureBound < 10);
+		int s1 = system.SecureRandom.nextInt();
+		int s2 = system.SecureRandom.nextInt();
+		bool secureDiffer = (s1 != s2);
+
+		string id1 = system.Uuid.random();
+		string id2 = system.Uuid.random();
+		bool uuidLen = (id1.length() == 36);
+		bool uuidVersion = (id1.charAt(14) == "4");
+		bool uuidVariant = (id1.charAt(19) == "8" || id1.charAt(19) == "9" || id1.charAt(19) == "a" || id1.charAt(19) == "b");
+		bool uuidUnique = (id1 != id2);
+
+		system.Out.print(system.Bool.toString(sameSeedSameResult));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(inBounds));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(floatInRange));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(successiveDiffer));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(secureInBounds));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(secureDiffer));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(uuidLen));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(uuidVersion));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(uuidVariant));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(uuidUnique));
+		return 0;
+	}
+}

@@ -21,6 +21,8 @@ pub fn is_stdlib_class(fqcn: &str) -> bool {
             | "system.io.File"
             | "system.io.Directory"
             | "system.io.Path"
+            | "system.SecureRandom"
+            | "system.Uuid"
     )
 }
 
@@ -43,6 +45,22 @@ pub fn instance_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Ty
         ("system.io.FileHandle", "write", 1) => Some((vec![Type::StringT], Type::Void)),
         ("system.io.FileHandle", "write", 3) => Some((vec![byte_array, Type::Int, Type::Int], Type::Void)),
         ("system.io.FileHandle", "flush", 0) => Some((vec![], Type::Void)),
+        ("system.Random", "nextInt", 0) => Some((vec![], Type::Int)),
+        ("system.Random", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
+        ("system.Random", "nextFloat", 0) => Some((vec![], Type::Float)),
+        _ => None,
+    }
+}
+
+/// Constructor parameter types for native instance classes constructible
+/// via `new` directly (unlike `system.io.FileHandle`, only ever produced by
+/// `File.open`) — consulted by `Emitter::compile_new` before falling back
+/// to `class_table::find_ctor`, same precedence as
+/// `native_generics::ctor_param_types`.
+pub fn ctor_param_types(fqcn: &str, argc: usize) -> Option<Vec<Type>> {
+    match (fqcn, argc) {
+        ("system.Random", 0) => Some(vec![]),
+        ("system.Random", 1) => Some(vec![Type::Int]),
         _ => None,
     }
 }
@@ -75,6 +93,7 @@ pub fn is_printlike(fqcn: &str, name: &str) -> bool {
 pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> {
     let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
     let string_array = Type::Array(Box::new(Type::StringT));
+    let byte_array = Type::Array(Box::new(Type::Byte));
     match (fqcn, name, argc) {
         ("system.In", "readLine", 0) => Some((vec![], nullable(Type::StringT))),
         ("system.Int", "parse", 1) => Some((vec![Type::StringT], Type::Int)),
@@ -113,6 +132,10 @@ pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type
         ("system.io.Path", "basename", 1) => Some((vec![Type::StringT], Type::StringT)),
         ("system.io.Path", "extension", 1) => Some((vec![Type::StringT], nullable(Type::StringT))),
         ("system.io.Path", "normalize", 1) => Some((vec![Type::StringT], Type::StringT)),
+        ("system.SecureRandom", "nextBytes", 1) => Some((vec![byte_array], Type::Void)),
+        ("system.SecureRandom", "nextInt", 0) => Some((vec![], Type::Int)),
+        ("system.SecureRandom", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
+        ("system.Uuid", "random", 0) => Some((vec![], Type::StringT)),
         _ => None,
     }
 }

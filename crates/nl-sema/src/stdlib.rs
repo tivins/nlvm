@@ -9,10 +9,11 @@
 //! two-copies-of-class_table pattern rather than a shared dependency).
 //!
 //! Only part of stdlib.md is covered so far (PLAN.md Phase 6): output,
-//! int/float/bool parsing/formatting, system.String, and file I/O
+//! int/float/bool parsing/formatting, system.String, file I/O
 //! (`system.io.File`/`FileHandle`/`Directory`/`Path` — no `FileMode`, since
-//! enums aren't implemented, so only the 1-argument `open`; no `glob`).
-//! Network, threads, etc. are future work.
+//! enums aren't implemented, so only the 1-argument `open`; no `glob`), and
+//! `system.Random`/`SecureRandom`/`Uuid`. Network, threads, etc. are future
+//! work.
 
 use nl_syntax::ast::Type;
 
@@ -39,6 +40,7 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
     let printable = Type::Union(vec![Type::StringT, Type::Int, Type::Float, Type::Bool]);
     let nullable = |t: Type| Type::Union(vec![t, Type::NullT]);
     let string_array = Type::Array(Box::new(Type::StringT));
+    let byte_array = Type::Array(Box::new(Type::Byte));
     match (fqcn, name, argc) {
         ("system.Out", "print", 1) | ("system.Out", "println", 1) => Some((vec![printable], Type::Void)),
         ("system.Err", "print", 1) | ("system.Err", "println", 1) => Some((vec![printable], Type::Void)),
@@ -79,6 +81,10 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.io.Path", "basename", 1) => Some((vec![Type::StringT], Type::StringT)),
         ("system.io.Path", "extension", 1) => Some((vec![Type::StringT], nullable(Type::StringT))),
         ("system.io.Path", "normalize", 1) => Some((vec![Type::StringT], Type::StringT)),
+        ("system.SecureRandom", "nextBytes", 1) => Some((vec![byte_array], Type::Void)),
+        ("system.SecureRandom", "nextInt", 0) => Some((vec![], Type::Int)),
+        ("system.SecureRandom", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
+        ("system.Uuid", "random", 0) => Some((vec![], Type::StringT)),
         _ => None,
     }
 }
@@ -88,7 +94,7 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
 /// classes in `lookup`, its methods dispatch through `INVOKE_INSTANCE` on
 /// the receiver's runtime class (see `nl_vm::native`).
 pub fn is_native_instance(fqcn: &str) -> bool {
-    fqcn == "system.io.FileHandle"
+    matches!(fqcn, "system.io.FileHandle" | "system.Random")
 }
 
 /// Instance-method signatures for `is_native_instance` classes, keyed by
@@ -105,6 +111,9 @@ pub fn instance_lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>
         ("system.io.FileHandle", "write", 1) => Some((vec![Type::StringT], Type::Void)),
         ("system.io.FileHandle", "write", 3) => Some((vec![byte_array, Type::Int, Type::Int], Type::Void)),
         ("system.io.FileHandle", "flush", 0) => Some((vec![], Type::Void)),
+        ("system.Random", "nextInt", 0) => Some((vec![], Type::Int)),
+        ("system.Random", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
+        ("system.Random", "nextFloat", 0) => Some((vec![], Type::Float)),
         _ => None,
     }
 }

@@ -80,6 +80,8 @@ pub fn is_native_class(fqcn: &str) -> bool {
             | "system.io.File"
             | "system.io.Directory"
             | "system.io.Path"
+            | "system.SecureRandom"
+            | "system.Uuid"
     )
 }
 
@@ -296,8 +298,77 @@ pub fn dispatch(program: &Program, fqcn: &str, name: &str, mut args: Vec<Value>)
             }
         }
         ("system.io.Path", "normalize") => Ok(Some(Value::Str(Rc::new(normalize_path(&str_at(&args, 0)?))))),
+        // stdlib.md § system.SecureRandom — CSPRNG backed by `/dev/urandom`,
+        // same source `system.Uuid.random` uses. Not seedable.
+        ("system.SecureRandom", "nextBytes") => {
+            let Some(Value::Array(buffer)) = args.first().cloned() else {
+                return Err(VmError::Malformed("expected byte[] argument to native call"));
+            };
+            let len = buffer.borrow().len();
+            let random = secure_random_bytes(len)?;
+            let mut buf = buffer.borrow_mut();
+            for (slot, b) in buf.iter_mut().zip(random) {
+                *slot = Value::Byte(b);
+            }
+            Ok(None)
+        }
+        ("system.SecureRandom", "nextInt") => {
+            if args.is_empty() {
+                Ok(Some(Value::Int(secure_next_u64()? as i64)))
+            } else {
+                let bound = expect_int(&mut args)?;
+                Ok(Some(Value::Int(secure_bounded_int(bound)?)))
+            }
+        }
+        // stdlib.md § system.Uuid — UUID v4, 122 random bits from the same
+        // CSPRNG as SecureRandom, version/variant nibbles set per RFC 4122.
+        ("system.Uuid", "random") => Ok(Some(Value::Str(Rc::new(uuid_v4()?)))),
         _ => Err(VmError::MethodNotFound(format!("{fqcn}.{name}"))),
     }
+}
+
+/// Reads `n` cryptographically secure random bytes from the OS entropy
+/// source (stdlib.md names `/dev/urandom` explicitly as an example backing
+/// source for `system.SecureRandom`).
+fn secure_random_bytes(n: usize) -> Result<Vec<u8>, VmError> {
+    use std::io::Read;
+    let mut f = std::fs::File::open("/dev/urandom").map_err(VmError::Io)?;
+    let mut buf = vec![0u8; n];
+    f.read_exact(&mut buf).map_err(VmError::Io)?;
+    Ok(buf)
+}
+
+fn secure_next_u64() -> Result<u64, VmError> {
+    let bytes = secure_random_bytes(8)?;
+    Ok(u64::from_le_bytes(bytes.try_into().expect("8 bytes")))
+}
+
+/// Rejection sampling so every result in `[0, bound)` is equally likely
+/// (stdlib.md: "uniformly distributed (no modulo bias)") — a plain modulo
+/// would slightly favor small results whenever `u64::MAX + 1` isn't a
+/// multiple of `bound`.
+fn secure_bounded_int(bound: i64) -> Result<i64, VmError> {
+    if bound <= 0 {
+        return Err(throw_native("IllegalArgumentException", "bound must be positive"));
+    }
+    let bound_u = bound as u64;
+    let limit = u64::MAX - (u64::MAX % bound_u);
+    loop {
+        let r = secure_next_u64()?;
+        if r < limit {
+            return Ok((r % bound_u) as i64);
+        }
+    }
+}
+
+fn uuid_v4() -> Result<String, VmError> {
+    let mut b = secure_random_bytes(16)?;
+    b[6] = (b[6] & 0x0F) | 0x40;
+    b[8] = (b[8] & 0x3F) | 0x80;
+    Ok(format!(
+        "{:02x}{:02x}{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}-{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+        b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7], b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15],
+    ))
 }
 
 /// Purely lexical `.`/`..`/redundant-separator resolution (stdlib.md §
@@ -399,14 +470,16 @@ fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {
     }))))
 }
 
-/// `system.io.FileHandle` — like the native generic collections below, a
-/// real heap object dispatched through `INVOKE_INSTANCE` on its runtime
-/// class, but non-generic and stateful *outside* the object: the object
-/// only carries an `"__fd__"` index into `Program::file_handles` (which is
-/// why `dispatch_native_instance` takes `program` while
-/// `dispatch_instance` doesn't).
+/// `system.io.FileHandle` and `system.Random` — like the native generic
+/// collections below, real heap objects dispatched through
+/// `INVOKE_INSTANCE` on their runtime class. `FileHandle` is stateful
+/// *outside* the object (an `"__fd__"` index into `Program::file_handles`,
+/// which is why `dispatch_native_instance` takes `program`); `Random`
+/// instead keeps its PRNG state directly on the object (`"__state__"`, see
+/// `is_random_class`/`dispatch_random` below) and ignores `program`
+/// entirely.
 pub fn is_native_instance_class(fqcn: &str) -> bool {
-    fqcn == "system.io.FileHandle"
+    matches!(fqcn, "system.io.FileHandle" | "system.Random")
 }
 
 pub fn dispatch_native_instance(
@@ -418,8 +491,11 @@ pub fn dispatch_native_instance(
     use std::io::{Read, Write};
 
     let Value::Object(obj) = receiver else {
-        return Err(VmError::Malformed("expected FileHandle receiver"));
+        return Err(VmError::Malformed("expected native instance receiver"));
     };
+    if obj.borrow().class_name == "system.Random" {
+        return dispatch_random(name, receiver, args);
+    }
     let id = match obj.borrow().fields.get("__fd__") {
         Some(Value::Int(id)) => *id,
         _ => return Err(VmError::Malformed("malformed FileHandle object")),
@@ -533,6 +609,88 @@ fn lossy_line(bytes: Vec<u8>) -> String {
         s.pop();
     }
     s
+}
+
+/// stdlib.md § system.Random — a deterministic PRNG (SplitMix64), seeded
+/// either explicitly (`construct(int seed)`, reproducible) or from an
+/// implementation-defined default (`construct()`, mixing wall-clock time
+/// with a process-wide counter so back-to-back default constructions still
+/// diverge). Unlike the native generic collections, `fqcn` here is never
+/// mangled (`"system.Random"`, no type arguments), so `NEW`/`INVOKE_SPECIAL`
+/// intercept it by exact name (`is_random_class`) rather than a prefix
+/// check.
+pub fn is_random_class(fqcn: &str) -> bool {
+    fqcn == "system.Random"
+}
+
+pub fn new_random_object() -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("__state__".to_string(), Value::Int(0));
+    Value::Object(Rc::new(RefCell::new(Object {
+        class_name: "system.Random".to_string(),
+        fields,
+    })))
+}
+
+pub fn construct_random(receiver: &Value, mut args: Vec<Value>) -> Result<(), VmError> {
+    let seed = match args.pop() {
+        Some(v) => v.as_int().ok_or(VmError::Malformed("expected int seed argument to native call"))? as u64,
+        None => default_random_seed(),
+    };
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected Random receiver"));
+    };
+    obj.borrow_mut().fields.insert("__state__".to_string(), Value::Int(seed as i64));
+    Ok(())
+}
+
+fn default_random_seed() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0);
+    let count = COUNTER.fetch_add(1, Ordering::Relaxed);
+    nanos ^ count.wrapping_mul(0x9E3779B97F4A7C15)
+}
+
+/// SplitMix64 (Steele, Lea & Flood) — small, fast, and statistically solid
+/// for a non-cryptographic PRNG; advances `state` in place and returns the
+/// next 64-bit output.
+fn splitmix64_next(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E3779B97F4A7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
+
+fn dispatch_random(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected Random receiver"));
+    };
+    let mut state = match obj.borrow().fields.get("__state__") {
+        Some(Value::Int(s)) => *s as u64,
+        _ => return Err(VmError::Malformed("malformed Random object")),
+    };
+    let result = match name {
+        "nextInt" if args.is_empty() => Value::Int(splitmix64_next(&mut state) as i64),
+        "nextInt" => {
+            let bound = expect_int(&mut args)?;
+            if bound <= 0 {
+                return Err(throw_native("IllegalArgumentException", "bound must be positive"));
+            }
+            Value::Int((splitmix64_next(&mut state) % bound as u64) as i64)
+        }
+        "nextFloat" => {
+            let raw = splitmix64_next(&mut state) >> 11; // top 53 bits
+            Value::Float(raw as f64 * (1.0 / (1u64 << 53) as f64))
+        }
+        _ => return Err(VmError::MethodNotFound(format!("system.Random.{name}"))),
+    };
+    obj.borrow_mut().fields.insert("__state__".to_string(), Value::Int(state as i64));
+    Ok(Some(result))
 }
 
 pub fn is_native_generic_class(fqcn: &str) -> bool {

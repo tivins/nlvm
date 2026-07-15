@@ -823,6 +823,12 @@ impl<'a> Emitter<'a> {
         // `nl_vm::native::is_native_class` does for `INVOKE_STATIC`).
         let params: Vec<Type> = if let Some(param_types) = crate::native_generics::ctor_param_types(&fqcn, args.len()) {
             param_types
+        } else if let Some(param_types) = crate::stdlib::ctor_param_types(&fqcn, args.len()) {
+            // `new system.Random()`/`new system.Random(int seed)` — the
+            // other native instance class besides FileHandle, but
+            // constructible directly (see `crate::stdlib::ctor_param_types`'s
+            // doc comment).
+            param_types
         } else {
             find_ctor(self.classes, &fqcn, args.len())
                 .cloned()

@@ -357,6 +357,14 @@ fn exec_step(
                     *pc_ref = pc;
                     return Ok(Step::Continue);
                 }
+                // `new system.Random()`/`new system.Random(int seed)` —
+                // same no-backing-Module situation, non-generic (see
+                // `nl_vm::native::is_random_class`'s doc comment).
+                if crate::native::is_random_class(&fqcn) {
+                    stack.push(crate::native::new_random_object());
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
                 // Fields are collected across the whole `extends` chain (a
                 // subclass's own fields, if any, take precedence over a
                 // same-named ancestor field) so an inherited field like
@@ -607,6 +615,11 @@ fn exec_step(
                 // see `nl_vm::native`'s module doc comment.
                 if crate::native::is_native_generic_class(&class_fqcn) {
                     crate::native::construct_generic(&receiver, &class_fqcn, call_args)?;
+                    *pc_ref = pc;
+                    return Ok(Step::Continue);
+                }
+                if crate::native::is_random_class(&class_fqcn) {
+                    crate::native::construct_random(&receiver, call_args)?;
                     *pc_ref = pc;
                     return Ok(Step::Continue);
                 }
