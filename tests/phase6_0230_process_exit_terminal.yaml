@@ -1,0 +1,29 @@
+---
+title: "Phase 6 — system.ps.Process.exit as a terminal statement"
+file_separator: "#NLFILE"
+expected_exit_code: 7
+expected_stdout: "before-exit"
+---
+
+#NLFILE phase6/psexit/Main.nl
+namespace phase6.psexit;
+class Main {
+	public static int main(string[] args) {
+		// `code` is assigned in only one branch of this `if`/`else`; this
+		// still compiles (no E001) because the `else` branch ends in
+		// `system.ps.Process.exit(...)`, a terminal statement that never
+		// returns (stdlib.md), so nl-sema doesn't require it to also
+		// establish definite assignment.
+		int code;
+		if (args.length() > 0) {
+			code = 1;
+		} else {
+			system.Out.print("before-exit");
+			system.ps.Process.exit(7);
+		}
+		// Never actually reached: `exit(7)` above really does terminate the
+		// program, so this print and the final `return 0` never run.
+		system.Out.print(system.Int.toString(code));
+		return 0;
+	}
+}

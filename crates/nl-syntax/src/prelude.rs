@@ -45,6 +45,7 @@ pub const NAMESPACED_ALIASES: &[(&str, &str)] = &[
     ("system.io.IOException", "IOException"),
     ("system.io.FileNotFoundException", "FileNotFoundException"),
     ("system.net.IOException", "IOException"),
+    ("system.ps.IOException", "IOException"),
 ];
 
 /// Every built-in exception class, as a namespace-less `SourceFile`.

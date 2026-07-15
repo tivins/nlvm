@@ -87,6 +87,7 @@ pub fn is_native_class(fqcn: &str) -> bool {
             | "system.net.TcpStream"
             | "system.net.Http"
             | "system.thread.Thread"
+            | "system.ps.Process"
     )
 }
 
@@ -380,8 +381,141 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             std::thread::sleep(std::time::Duration::from_millis(millis));
             Ok(None)
         }
+        // stdlib.md § system.ps.Process — `list`/`list(pid)` read `/proc`
+        // directly (Linux-only, same portability stance already taken for
+        // `system.SecureRandom`/`Uuid`'s `/dev/urandom`: this project's
+        // dev/CI environment is Linux and no external crate is pulled in
+        // just for process enumeration). `run` shells out and captures
+        // output; `exit` doesn't produce a value at all — see `VmError::Exit`.
+        ("system.ps.Process", "list") => {
+            let usernames = read_passwd_usernames();
+            let infos: Vec<Value> = if args.is_empty() {
+                let mut pids: Vec<u32> = std::fs::read_dir("/proc")
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|e| e.ok()?.file_name().to_str()?.parse::<u32>().ok())
+                    .collect();
+                pids.sort_unstable();
+                pids.into_iter().filter_map(|pid| read_process_info(pid, &usernames)).collect()
+            } else {
+                let pid = int_at(&args, 0)?;
+                read_process_info(pid as u32, &usernames).into_iter().collect()
+            };
+            Ok(Some(Value::Array(Arc::new(Mutex::new(infos)))))
+        }
+        ("system.ps.Process", "run") => {
+            let output = match args.first() {
+                Some(Value::Str(cmd)) => std::process::Command::new("sh").arg("-c").arg(cmd.as_str()).output(),
+                Some(Value::Array(items)) => {
+                    let parts: Vec<String> = lock(items)
+                        .iter()
+                        .map(|v| match v {
+                            Value::Str(s) => Ok((**s).clone()),
+                            _ => Err(VmError::Malformed("expected string[] argument to native call")),
+                        })
+                        .collect::<Result<_, _>>()?;
+                    let Some((program_name, rest)) = parts.split_first() else {
+                        return Err(throw_native("IOException", "empty command"));
+                    };
+                    std::process::Command::new(program_name).args(rest).output()
+                }
+                _ => return Err(VmError::Malformed("expected string or string[] argument to native call")),
+            };
+            let output = output.map_err(|e| throw_native("IOException", format!("{e}")))?;
+            let mut fields = HashMap::new();
+            fields.insert("exitCode".to_string(), Value::Int(output.status.code().unwrap_or(-1) as i64));
+            fields.insert(
+                "stdout".to_string(),
+                Value::Str(Arc::new(String::from_utf8_lossy(&output.stdout).into_owned())),
+            );
+            fields.insert(
+                "stderr".to_string(),
+                Value::Str(Arc::new(String::from_utf8_lossy(&output.stderr).into_owned())),
+            );
+            Ok(Some(Value::Object(Arc::new(Mutex::new(Object {
+                class_name: "system.ps.ProcessResult".to_string(),
+                fields,
+            })))))
+        }
+        ("system.ps.Process", "pid") => Ok(Some(Value::Int(std::process::id() as i64))),
+        // Never actually returns to the caller — see `VmError::Exit`'s doc
+        // comment for why this isn't a literal `std::process::exit`.
+        ("system.ps.Process", "exit") => Err(VmError::Exit(expect_int(&mut args)? as i32)),
+        ("system.ps.Process", "getCwd") => {
+            let cwd = std::env::current_dir().map_err(VmError::Io)?;
+            Ok(Some(Value::Str(Arc::new(cwd.to_string_lossy().into_owned()))))
+        }
+        ("system.ps.Process", "setCwd") => {
+            let path = str_at(&args, 0)?;
+            std::env::set_current_dir(&path).map_err(|e| throw_io_error(&path, e))?;
+            Ok(None)
+        }
         _ => Err(VmError::MethodNotFound(format!("{fqcn}.{name}"))),
     }
+}
+
+/// `uid -> username` from `/etc/passwd` (`name:passwd:uid:gid:gecos:home:shell`),
+/// used by `read_process_info` to resolve `ProcessInfo.user`. Read fresh on
+/// every `Process.list()` call rather than cached — process listing is
+/// already an inherently point-in-time snapshot, and re-reading a small
+/// text file per call keeps this stateless like every other native here.
+fn read_passwd_usernames() -> HashMap<u32, String> {
+    let mut map = HashMap::new();
+    if let Ok(content) = std::fs::read_to_string("/etc/passwd") {
+        for line in content.lines() {
+            let fields: Vec<&str> = line.split(':').collect();
+            if let [name, _passwd, uid, ..] = fields.as_slice() {
+                if let Ok(uid) = uid.parse::<u32>() {
+                    map.entry(uid).or_insert_with(|| name.to_string());
+                }
+            }
+        }
+    }
+    map
+}
+
+/// One `system.ps.ProcessInfo` for `pid`, or `None` if `/proc/<pid>` doesn't
+/// exist (already gone, or the caller has no permission to see it — treated
+/// the same as "not found", matching `Process.list(pid)`'s documented
+/// "empty array if not found"). `command`/`args` come from `/proc/<pid>/cmdline`
+/// (NUL-separated: first entry is the command, the rest are arguments); a
+/// kernel thread or zombie has an empty `cmdline`, so `command` falls back to
+/// `/proc/<pid>/comm` (always present) with no args. `user` comes from the
+/// first `Uid:` field of `/proc/<pid>/status`, resolved through
+/// `read_passwd_usernames` — `None` (not just an unknown uid) if `status`
+/// itself can't be read, per stdlib.md's "null if not available".
+fn read_process_info(pid: u32, usernames: &HashMap<u32, String>) -> Option<Value> {
+    let proc_dir = format!("/proc/{pid}");
+    if !std::path::Path::new(&proc_dir).is_dir() {
+        return None;
+    }
+    let cmdline_raw = std::fs::read(format!("{proc_dir}/cmdline")).unwrap_or_default();
+    let mut parts: Vec<String> = cmdline_raw
+        .split(|&b| b == 0)
+        .filter(|s| !s.is_empty())
+        .map(|s| String::from_utf8_lossy(s).into_owned())
+        .collect();
+    let command = if parts.is_empty() {
+        std::fs::read_to_string(format!("{proc_dir}/comm")).map(|s| s.trim_end().to_string()).unwrap_or_default()
+    } else {
+        parts.remove(0)
+    };
+    let user = std::fs::read_to_string(format!("{proc_dir}/status")).ok().and_then(|status| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix("Uid:")?.split_whitespace().next()?.parse::<u32>().ok())
+            .and_then(|uid| usernames.get(&uid).cloned())
+    });
+
+    let mut fields = HashMap::new();
+    fields.insert("pid".to_string(), Value::Int(pid as i64));
+    fields.insert("command".to_string(), Value::Str(Arc::new(command)));
+    fields.insert(
+        "args".to_string(),
+        Value::Array(Arc::new(Mutex::new(parts.into_iter().map(|a| Value::Str(Arc::new(a))).collect()))),
+    );
+    fields.insert("user".to_string(), user.map_or(Value::Null, |u| Value::Str(Arc::new(u))));
+    Some(Value::Object(Arc::new(Mutex::new(Object { class_name: "system.ps.ProcessInfo".to_string(), fields }))))
 }
 
 /// Reads `n` cryptographically secure random bytes from the OS entropy

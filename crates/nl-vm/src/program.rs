@@ -313,6 +313,11 @@ pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
             append_line(&mut stderr, &format!("Unhandled exception: {}", describe_exception(&exc)));
             RunOutcome { exit_code: 1, stdout, stderr }
         }
+        // `system.ps.Process.exit(code)` — see `VmError::Exit`'s doc
+        // comment. Not an error at all from `run_program`'s point of view,
+        // just an early, uncatchable short-circuit of `main`'s own return
+        // value.
+        Err(VmError::Exit(code)) => RunOutcome { exit_code: code, stdout, stderr },
         Err(e) => {
             append_line(&mut stderr, &format!("Unhandled exception: {e}"));
             RunOutcome { exit_code: 1, stdout, stderr }

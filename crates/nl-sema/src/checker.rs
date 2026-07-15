@@ -384,7 +384,23 @@ impl<'a> MethodChecker<'a> {
             Stmt::Return(None) => Ok((assigned, true)),
             Stmt::Expr(expr) => {
                 self.check_expr(expr, &mut assigned)?;
-                Ok((assigned, false))
+                // `system.ps.Process.exit(...)` (stdlib.md: "Terminal
+                // statement: does not return") — treated as terminating the
+                // current path exactly like `throw`/`return`, so e.g. an
+                // `if`/`else` where one branch calls `exit(...)` and the
+                // other assigns a variable still counts that variable as
+                // definitely assigned afterwards (see `Stmt::If`'s merge
+                // above). Detected structurally rather than through
+                // `crate::stdlib::lookup`'s return value, since a plain
+                // `Type::Void` there is indistinguishable from any other
+                // void-returning stdlib call.
+                let terminates = match expr {
+                    Expr::MethodCall(target, name, _) if name == "exit" => {
+                        dotted_path(target).as_deref() == Some("system.ps.Process") && self.resolve("system").is_none()
+                    }
+                    _ => false,
+                };
+                Ok((assigned, terminates))
             }
             Stmt::ThisCall(args) | Stmt::SuperCall(args) => {
                 for a in args {

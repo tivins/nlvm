@@ -26,6 +26,7 @@ pub fn is_stdlib_class(fqcn: &str) -> bool {
             | "system.net.TcpStream"
             | "system.net.Http"
             | "system.thread.Thread"
+            | "system.ps.Process"
     )
 }
 
@@ -43,6 +44,18 @@ fn tcp_stream() -> Type {
 
 fn http_response() -> Type {
     Type::Named("system.net.HttpResponse".to_string())
+}
+
+fn process_info() -> Type {
+    Type::Named("system.ps.ProcessInfo".to_string())
+}
+
+/// `pub(crate)`, unlike this module's other type helpers, since
+/// `Emitter::compile_stdlib_call`'s `system.ps.Process.run` special case
+/// (see this file's `signature` doc comment) needs it directly rather than
+/// through this table.
+pub(crate) fn process_result() -> Type {
+    Type::Named("system.ps.ProcessResult".to_string())
 }
 
 /// `system.io.FileMode.<name>` int constant, or `None` if unknown — mirrors
@@ -203,6 +216,19 @@ pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type
         ("system.net.Http", "get", 1) => Some((vec![Type::StringT], http_response())),
         ("system.net.Http", "post", 2) => Some((vec![Type::StringT, Type::StringT], http_response())),
         ("system.thread.Thread", "sleep", 1) => Some((vec![Type::Int], Type::Void)),
+        // `system.ps.Process.run` is deliberately absent here — its two
+        // overloads (`string[] args` vs `string command`) share the same
+        // arity, and unlike `system.Out.print`'s union of primitives, the
+        // two shapes need genuinely different bytecode (no shared
+        // normalization), so `compile_stdlib_call` special-cases it before
+        // ever reaching this table. See `nl_sema::stdlib::lookup`'s matching
+        // comment for why sema's table *can* just use a union type there.
+        ("system.ps.Process", "list", 0) => Some((vec![], Type::Array(Box::new(process_info())))),
+        ("system.ps.Process", "list", 1) => Some((vec![Type::Int], Type::Array(Box::new(process_info())))),
+        ("system.ps.Process", "pid", 0) => Some((vec![], Type::Int)),
+        ("system.ps.Process", "exit", 1) => Some((vec![Type::Int], Type::Void)),
+        ("system.ps.Process", "getCwd", 0) => Some((vec![], Type::StringT)),
+        ("system.ps.Process", "setCwd", 1) => Some((vec![Type::StringT], Type::Void)),
         _ => None,
     }
 }
@@ -218,6 +244,13 @@ pub fn result_field_ty(fqcn: &str, name: &str) -> Option<Type> {
         ("system.net.HttpResponse", "statusCode") => Some(Type::Int),
         ("system.net.HttpResponse", "body") => Some(Type::StringT),
         ("system.net.HttpResponse", "headers") => Some(nullable(Type::Array(Box::new(Type::StringT)))),
+        ("system.ps.ProcessInfo", "pid") => Some(Type::Int),
+        ("system.ps.ProcessInfo", "command") => Some(Type::StringT),
+        ("system.ps.ProcessInfo", "args") => Some(Type::Array(Box::new(Type::StringT))),
+        ("system.ps.ProcessInfo", "user") => Some(nullable(Type::StringT)),
+        ("system.ps.ProcessResult", "exitCode") => Some(Type::Int),
+        ("system.ps.ProcessResult", "stdout") => Some(Type::StringT),
+        ("system.ps.ProcessResult", "stderr") => Some(Type::StringT),
         _ => None,
     }
 }

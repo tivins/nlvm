@@ -1093,6 +1093,32 @@ impl<'a> Emitter<'a> {
             return self.emit_native_static(fqcn, name, &[Type::StringT], &Type::Void);
         }
 
+        // `system.ps.Process.run` — two overloads at the same arity
+        // (`string[] args` vs `string command`, stdlib.md), which
+        // `crate::stdlib::signature` can't disambiguate the way `print`
+        // does (that table only keys on arity). The two shapes need
+        // genuinely different bytecode, not a shared normalization, so the
+        // concrete descriptor is picked from the compiled argument's actual
+        // `ExprTy` — the VM's native dispatch (`nl_vm::native`) likewise
+        // switches on the argument's runtime value variant, not the
+        // descriptor.
+        if fqcn == "system.ps.Process" && name == "run" {
+            if args.len() != 1 {
+                return Err(CodegenError::Unsupported(format!("'run' expects 1 argument, got {}", args.len())));
+            }
+            let ty = self.compile_expr(&args[0])?;
+            let param_ty = match &ty {
+                ExprTy::StringT => Type::StringT,
+                ExprTy::Array(elem) if **elem == ExprTy::StringT => Type::Array(Box::new(Type::StringT)),
+                other => {
+                    return Err(CodegenError::Unsupported(format!(
+                        "'run' expects a string or string[] argument, got {other:?}"
+                    )))
+                }
+            };
+            return self.emit_native_static(fqcn, name, &[param_ty], &crate::stdlib::process_result());
+        }
+
         let (param_types, return_ty) = crate::stdlib::signature(fqcn, name, args.len()).ok_or_else(|| {
             CodegenError::Unsupported(format!(
                 "unknown stdlib method '{fqcn}.{name}' with {} argument(s)",

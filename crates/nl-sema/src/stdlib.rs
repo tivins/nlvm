@@ -45,6 +45,14 @@ fn http_response() -> Type {
     Type::Named("system.net.HttpResponse".to_string())
 }
 
+fn process_info() -> Type {
+    Type::Named("system.ps.ProcessInfo".to_string())
+}
+
+fn process_result() -> Type {
+    Type::Named("system.ps.ProcessResult".to_string())
+}
+
 /// `system.io.FileMode.<name>` — `None` if `fqcn` isn't `"system.io.FileMode"`
 /// or `name` isn't one of the six modes stdlib.md documents. See this
 /// module's doc comment.
@@ -136,6 +144,32 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         // otherwise instance-dispatch class (`is_native_instance` below) —
         // same shape as `system.net.TcpStream.connect`.
         ("system.thread.Thread", "sleep", 1) => Some((vec![Type::Int], Type::Void)),
+        // stdlib.md § system.ps.Process — `run` has two overloads at the
+        // same arity (`string[] args` vs `string command`); this table only
+        // keys on arity, so both are folded into one union parameter type,
+        // same trick as `print`/`println`'s `printable` above. Unlike
+        // `print`, no runtime normalization is needed (the VM inspects the
+        // actual argument's value variant, see `nl_vm::native`), and
+        // nl-codegen special-cases this one call instead of going through
+        // its own generic `signature` table (a union collapses to its first
+        // member for codegen purposes, which would wrongly reject the
+        // `string[]` overload — see `nl_codegen::expr::compile_stdlib_call`).
+        ("system.ps.Process", "run", 1) => {
+            Some((vec![Type::Union(vec![Type::StringT, string_array.clone()])], process_result()))
+        }
+        ("system.ps.Process", "list", 0) => Some((vec![], Type::Array(Box::new(process_info())))),
+        ("system.ps.Process", "list", 1) => Some((vec![Type::Int], Type::Array(Box::new(process_info())))),
+        ("system.ps.Process", "pid", 0) => Some((vec![], Type::Int)),
+        // `exit` never actually returns (stdlib.md: "Terminal statement:
+        // does not return"); `nl-sema::checker::check_stmt` special-cases
+        // it (see the doc comment there) so code after it in the same block
+        // isn't required to (re)establish definite assignment, mirroring
+        // `throw`/`return`. The `Void` return type here is only reached
+        // when `exit(...)` is used as a plain expression statement, which
+        // is how every real caller uses it.
+        ("system.ps.Process", "exit", 1) => Some((vec![Type::Int], Type::Void)),
+        ("system.ps.Process", "getCwd", 0) => Some((vec![], Type::StringT)),
+        ("system.ps.Process", "setCwd", 1) => Some((vec![Type::StringT], Type::Void)),
         _ => None,
     }
 }
@@ -150,6 +184,16 @@ pub fn result_field_ty(fqcn: &str, name: &str) -> Option<Type> {
         ("system.net.HttpResponse", "statusCode") => Some(Type::Int),
         ("system.net.HttpResponse", "body") => Some(Type::StringT),
         ("system.net.HttpResponse", "headers") => Some(nullable(Type::Array(Box::new(Type::StringT)))),
+        // stdlib.md § Result types — `system.ps.ProcessInfo` (one entry of
+        // `Process.list()`) and `system.ps.ProcessResult` (`Process.run()`'s
+        // outcome), same non-generic native result shape as `HttpResponse`.
+        ("system.ps.ProcessInfo", "pid") => Some(Type::Int),
+        ("system.ps.ProcessInfo", "command") => Some(Type::StringT),
+        ("system.ps.ProcessInfo", "args") => Some(Type::Array(Box::new(Type::StringT))),
+        ("system.ps.ProcessInfo", "user") => Some(nullable(Type::StringT)),
+        ("system.ps.ProcessResult", "exitCode") => Some(Type::Int),
+        ("system.ps.ProcessResult", "stdout") => Some(Type::StringT),
+        ("system.ps.ProcessResult", "stderr") => Some(Type::StringT),
         _ => None,
     }
 }
@@ -238,6 +282,7 @@ pub fn throws(fqcn: &str, name: &str) -> &'static [&'static str] {
         // against the real declared signature (E015 still fires if unhandled).
         ("system.thread.Thread", "join") => &["InterruptedException"],
         ("system.thread.Thread", "sleep") => &["InterruptedException"],
+        ("system.ps.Process", "run" | "setCwd") => &["IOException"],
         _ => &[],
     }
 }

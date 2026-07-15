@@ -1,0 +1,50 @@
+---
+title: "Phase 6 — system.ps.Process"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "pidok cwdok run0 run1 selfok listok"
+---
+
+#NLFILE phase6/psprocess/Main.nl
+namespace phase6.psprocess;
+class Main {
+	public static int main(string[] args) {
+		string original = system.ps.Process.getCwd();
+		try {
+			int pid = system.ps.Process.pid();
+			system.Out.print(pid > 0 ? "pidok" : "pidbad");
+			system.Out.print(" ");
+
+			system.ps.Process.setCwd("target");
+			string afterSet = system.ps.Process.getCwd();
+			system.Out.print(afterSet.endsWith("target") ? "cwdok" : "cwdbad");
+			system.Out.print(" ");
+
+			auto result = system.ps.Process.run("echo hello");
+			system.Out.print(result.exitCode == 0 && result.stdout.trim() == "hello" ? "run0" : "runbad");
+			system.Out.print(" ");
+
+			string[] argv = new string[2];
+			argv[0] = "echo";
+			argv[1] = "world";
+			auto result2 = system.ps.Process.run(argv);
+			system.Out.print(result2.exitCode == 0 && result2.stdout.trim() == "world" ? "run1" : "runbad");
+			system.Out.print(" ");
+
+			auto matches = system.ps.Process.list(pid);
+			system.Out.print(matches.length() == 1 && matches[0].pid == pid ? "selfok" : "selfbad");
+			system.Out.print(" ");
+
+			auto all = system.ps.Process.list();
+			system.Out.print(all.length() > 0 ? "listok" : "listbad");
+		} catch (system.ps.IOException e) {
+			system.Out.print("ioerr");
+		} finally {
+			try {
+				system.ps.Process.setCwd(original);
+			} catch (system.ps.IOException e) {
+			}
+		}
+		return 0;
+	}
+}
