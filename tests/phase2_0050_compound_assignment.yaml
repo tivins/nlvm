@@ -1,0 +1,20 @@
+---
+title: "compound assignment operators"
+file_separator: "#NLFILE"
+expected_exit_code: 2
+expected_stdout: ""
+---
+
+#NLFILE phase2/compound/Main.nl
+namespace phase2.compound;
+class Main {
+	public static int main(string[] args) {
+		int x = 10;
+		x += 5;
+		x -= 3;
+		x *= 2;
+		x /= 4;
+		x %= 4;
+		return x;
+	}
+}

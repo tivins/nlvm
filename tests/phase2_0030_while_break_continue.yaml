@@ -1,0 +1,24 @@
+---
+title: "while loop with break and continue"
+file_separator: "#NLFILE"
+expected_exit_code: 50
+expected_stdout: ""
+---
+
+#NLFILE phase2/whileloop/Main.nl
+namespace phase2.whileloop;
+class Main {
+	public static int main(string[] args) {
+		int sum = 0;
+		int i = 1;
+		while (i <= 10) {
+			if (i == 5) {
+				i++;
+				continue;
+			}
+			sum += i;
+			i++;
+		}
+		return sum;
+	}
+}

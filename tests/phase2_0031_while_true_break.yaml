@@ -1,0 +1,21 @@
+---
+title: "while (true) with break"
+file_separator: "#NLFILE"
+expected_exit_code: 7
+expected_stdout: ""
+---
+
+#NLFILE phase2/whiletrue/Main.nl
+namespace phase2.whiletrue;
+class Main {
+	public static int main(string[] args) {
+		int i = 0;
+		while (true) {
+			if (i == 7) {
+				break;
+			}
+			i++;
+		}
+		return i;
+	}
+}

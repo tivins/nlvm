@@ -1,0 +1,16 @@
+---
+title: "Local variables — typed and auto declarations"
+file_separator: "#NLFILE"
+expected_exit_code: 22
+expected_stdout: ""
+---
+
+#NLFILE phase2/vars/Main.nl
+namespace phase2.vars;
+class Main {
+	public static int main(string[] args) {
+		auto a = 7;
+		int b = a * 3 + 1;
+		return b;
+	}
+}

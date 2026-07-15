@@ -1,5 +1,7 @@
+use std::collections::HashMap;
+
 use nl_bytecode::{ConstantPool, Opcode};
-use nl_syntax::ast::{BinOp, Expr, UnOp};
+use nl_syntax::ast::{BinOp, Expr, Type, UnOp};
 
 use crate::error::CodegenError;
 
@@ -8,29 +10,82 @@ pub enum ExprTy {
     Int,
     Float,
     Bool,
+    Byte,
     StringT,
     Null,
+    Void,
+    /// Array/class types — not yet representable (milestone 5); values of
+    /// this type flow through identifiers/calls but reject further use.
+    Other,
+}
+
+pub fn expr_ty_of(ty: &Type) -> ExprTy {
+    match ty {
+        Type::Int => ExprTy::Int,
+        Type::Float => ExprTy::Float,
+        Type::Bool => ExprTy::Bool,
+        Type::Byte => ExprTy::Byte,
+        Type::StringT => ExprTy::StringT,
+        Type::Void => ExprTy::Void,
+        Type::Array(_) | Type::Named(_) => ExprTy::Other,
+    }
+}
+
+/// Static signature of a method in the class currently being compiled —
+/// enough to type-check call sites and resolve them to a constant-pool
+/// `MethodRef`, built in a first pass so calls (including recursive/forward
+/// calls) can resolve regardless of declaration order.
+#[derive(Debug, Clone)]
+pub struct MethodSig {
+    pub param_types: Vec<ExprTy>,
+    pub return_ty: ExprTy,
+    pub method_ref_index: u16,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LocalSlot {
+    pub index: u16,
+    pub ty: ExprTy,
+}
+
+pub(crate) struct LoopCtx {
+    pub break_patches: Vec<(usize, usize)>,
+    pub continue_patches: Vec<(usize, usize)>,
 }
 
 pub struct Emitter<'a> {
     pub code: Vec<u8>,
     pub cp: &'a mut ConstantPool,
+    pub(crate) methods: &'a HashMap<String, MethodSig>,
     depth: i32,
     max_depth: i32,
+    pub(crate) scopes: Vec<HashMap<String, LocalSlot>>,
+    next_local: u16,
+    max_locals: u16,
+    pub(crate) loops: Vec<LoopCtx>,
 }
 
 impl<'a> Emitter<'a> {
-    pub fn new(cp: &'a mut ConstantPool) -> Self {
+    pub fn new(cp: &'a mut ConstantPool, methods: &'a HashMap<String, MethodSig>) -> Self {
         Self {
             code: Vec::new(),
             cp,
+            methods,
             depth: 0,
             max_depth: 0,
+            scopes: Vec::new(),
+            next_local: 0,
+            max_locals: 0,
+            loops: Vec::new(),
         }
     }
 
     pub fn max_stack(&self) -> u16 {
         self.max_depth.max(0) as u16
+    }
+
+    pub fn max_locals(&self) -> u16 {
+        self.max_locals
     }
 
     fn track(&mut self, delta: i32) {
@@ -63,10 +118,16 @@ impl<'a> Emitter<'a> {
         self.track(stack_delta);
     }
 
+    fn op_iinc(&mut self, local_index: u16, delta: i16) {
+        self.code.push(Opcode::IInc as u8);
+        self.code.extend_from_slice(&local_index.to_be_bytes());
+        self.code.extend_from_slice(&delta.to_be_bytes());
+    }
+
     /// Emits a branch opcode with a placeholder offset; pops `stack_delta`
     /// (0 for GOTO, -1 for IF_TRUE/IF_FALSE). Returns (opcode_pc, operand_pos)
-    /// for later patching with `patch_branch`.
-    fn branch(&mut self, op: Opcode, stack_delta: i32) -> (usize, usize) {
+    /// for later patching with `patch_branch`/`patch_branch_to`.
+    pub(crate) fn branch(&mut self, op: Opcode, stack_delta: i32) -> (usize, usize) {
         let opcode_pc = self.code.len();
         self.code.push(op as u8);
         let operand_pos = self.code.len();
@@ -76,9 +137,77 @@ impl<'a> Emitter<'a> {
     }
 
     fn patch_branch(&mut self, opcode_pc: usize, operand_pos: usize) {
-        let target = self.code.len() as i32;
-        let offset = (target - opcode_pc as i32) as i16;
+        self.patch_branch_to(opcode_pc, operand_pos, self.code.len());
+    }
+
+    pub(crate) fn patch_branch_to(&mut self, opcode_pc: usize, operand_pos: usize, target: usize) {
+        let offset = (target as i32 - opcode_pc as i32) as i16;
         self.code[operand_pos..operand_pos + 2].copy_from_slice(&offset.to_be_bytes());
+    }
+
+    pub(crate) fn emit_store(&mut self, local_index: u16) {
+        self.op_u16(Opcode::Store, local_index, -1);
+    }
+
+    pub(crate) fn emit_i2f(&mut self) {
+        self.op(Opcode::I2F, 0);
+    }
+
+    pub(crate) fn emit_goto_to(&mut self, target: usize) {
+        let opcode_pc = self.code.len();
+        self.code.push(Opcode::Goto as u8);
+        let offset = (target as i32 - opcode_pc as i32) as i16;
+        self.code.extend_from_slice(&offset.to_be_bytes());
+        self.track(0);
+    }
+
+    pub(crate) fn push_scope(&mut self) {
+        self.scopes.push(HashMap::new());
+    }
+
+    pub(crate) fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    pub(crate) fn declare_local(&mut self, name: String, ty: ExprTy) -> u16 {
+        let index = self.next_local;
+        self.next_local += 1;
+        if self.next_local > self.max_locals {
+            self.max_locals = self.next_local;
+        }
+        self.scopes
+            .last_mut()
+            .expect("declare_local outside any scope")
+            .insert(name, LocalSlot { index, ty });
+        index
+    }
+
+    fn lookup_local(&self, name: &str) -> Result<LocalSlot, CodegenError> {
+        for scope in self.scopes.iter().rev() {
+            if let Some(slot) = scope.get(name) {
+                return Ok(*slot);
+            }
+        }
+        Err(CodegenError::Unsupported(format!("undefined variable '{name}'")))
+    }
+
+    /// Compiles `expr` as a statement: evaluates it and discards any value
+    /// it leaves on the stack. Used for expression statements and for-loop
+    /// step expressions.
+    pub fn compile_expr_stmt(&mut self, expr: &Expr) -> Result<(), CodegenError> {
+        let ty = self.compile_expr(expr)?;
+        if ty != ExprTy::Void {
+            self.op(Opcode::Pop, -1);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn compile_expr_bool(&mut self, expr: &Expr) -> Result<(), CodegenError> {
+        let ty = self.compile_expr(expr)?;
+        if ty != ExprTy::Bool {
+            return Err(CodegenError::Unsupported(format!("expected bool condition, got {ty:?}")));
+        }
+        Ok(())
     }
 
     pub fn compile_expr(&mut self, expr: &Expr) -> Result<ExprTy, CodegenError> {
@@ -104,9 +233,80 @@ impl<'a> Emitter<'a> {
                 self.op(Opcode::ConstNull, 1);
                 Ok(ExprTy::Null)
             }
+            Expr::Ident(name) => {
+                let slot = self.lookup_local(name)?;
+                self.op_u16(Opcode::Load, slot.index, 1);
+                Ok(slot.ty)
+            }
+            Expr::Assign(name, value) => self.compile_assign(name, value),
+            Expr::Call(name, args) => self.compile_call(name, args),
+            Expr::PostIncr(name) => self.compile_incr(name, 1),
+            Expr::PostDecr(name) => self.compile_incr(name, -1),
             Expr::Unary(op, inner) => self.compile_unary(*op, inner),
             Expr::Binary(op, lhs, rhs) => self.compile_binary(*op, lhs, rhs),
         }
+    }
+
+    fn compile_assign(&mut self, name: &str, value: &Expr) -> Result<ExprTy, CodegenError> {
+        let slot = self.lookup_local(name)?;
+        let value_ty = self.compile_expr(value)?;
+        if slot.ty == ExprTy::Float && value_ty == ExprTy::Int {
+            self.op(Opcode::I2F, 0);
+        } else if slot.ty != value_ty {
+            return Err(CodegenError::Unsupported(format!(
+                "cannot assign {value_ty:?} to variable '{name}' of type {:?}",
+                slot.ty
+            )));
+        }
+        // Leave a copy as the expression's own value (assignment is an
+        // expression, e.g. usable as `a = b = 1;`).
+        self.op(Opcode::Dup, 1);
+        self.op_u16(Opcode::Store, slot.index, -1);
+        Ok(slot.ty)
+    }
+
+    fn compile_incr(&mut self, name: &str, delta: i16) -> Result<ExprTy, CodegenError> {
+        let slot = self.lookup_local(name)?;
+        if slot.ty != ExprTy::Int {
+            return Err(CodegenError::Unsupported(format!(
+                "'++'/'--' only supported on int, found {:?}",
+                slot.ty
+            )));
+        }
+        self.op_iinc(slot.index, delta);
+        Ok(ExprTy::Void)
+    }
+
+    fn compile_call(&mut self, name: &str, args: &[Expr]) -> Result<ExprTy, CodegenError> {
+        let sig = self
+            .methods
+            .get(name)
+            .cloned()
+            .ok_or_else(|| CodegenError::Unsupported(format!("call to unknown method '{name}'")))?;
+        if args.len() != sig.param_types.len() {
+            return Err(CodegenError::Unsupported(format!(
+                "'{name}' expects {} argument(s), got {}",
+                sig.param_types.len(),
+                args.len()
+            )));
+        }
+        for (arg, expected_ty) in args.iter().zip(&sig.param_types) {
+            let actual = self.compile_expr(arg)?;
+            if *expected_ty == ExprTy::Float && actual == ExprTy::Int {
+                self.op(Opcode::I2F, 0);
+            } else if actual != *expected_ty {
+                return Err(CodegenError::Unsupported(format!(
+                    "argument to '{name}' has type {actual:?}, expected {expected_ty:?}"
+                )));
+            }
+        }
+        let result_delta = if sig.return_ty == ExprTy::Void { 0 } else { 1 };
+        self.op_u16(
+            Opcode::InvokeStatic,
+            sig.method_ref_index,
+            result_delta - args.len() as i32,
+        );
+        Ok(sig.return_ty)
     }
 
     fn emit_int_const(&mut self, v: i64) {

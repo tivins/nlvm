@@ -1,0 +1,23 @@
+---
+title: "GCD via while loop and modulo"
+file_separator: "#NLFILE"
+expected_exit_code: 6
+expected_stdout: ""
+---
+
+#NLFILE phase2/gcd/Main.nl
+namespace phase2.gcd;
+class Main {
+	private static int gcd(int a, int b) {
+		while (b != 0) {
+			int t = b;
+			b = a % b;
+			a = t;
+		}
+		return a;
+	}
+
+	public static int main(string[] args) {
+		return gcd(48, 18);
+	}
+}

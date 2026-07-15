@@ -1,12 +1,15 @@
 pub mod error;
 mod expr;
+mod stmt;
 mod type_desc;
 
+use std::collections::HashMap;
+
 use nl_bytecode::{method_flags, ConstantPool, HashAlgo, MethodDescriptor, Module, Opcode};
-use nl_syntax::ast::{MethodDecl, SourceFile, Stmt, Visibility};
+use nl_syntax::ast::{MethodDecl, SourceFile, Type, Visibility};
 
 pub use error::CodegenError;
-use expr::Emitter;
+use expr::{expr_ty_of, Emitter, MethodSig};
 use type_desc::method_descriptor;
 
 pub fn compile_source_file(file: &SourceFile) -> Result<Module, CodegenError> {
@@ -19,9 +22,28 @@ pub fn compile_source_file(file: &SourceFile) -> Result<Module, CodegenError> {
     };
     let this_class = cp.add_class(&fqcn);
 
+    // First pass: register every method's signature so call sites resolve
+    // regardless of declaration order (forward references, recursion).
+    let mut sigs = HashMap::with_capacity(file.class.methods.len());
+    for method in &file.class.methods {
+        let name_index = cp.add_utf8(method.name.clone());
+        let param_types: Vec<Type> = method.params.iter().map(|p| p.ty.clone()).collect();
+        let descriptor = method_descriptor(&param_types, &method.return_type);
+        let descriptor_index = cp.add_type_desc(&descriptor);
+        let method_ref_index = cp.add_method_ref(this_class, name_index, descriptor_index);
+        sigs.insert(
+            method.name.clone(),
+            MethodSig {
+                param_types: param_types.iter().map(expr_ty_of).collect(),
+                return_ty: expr_ty_of(&method.return_type),
+                method_ref_index,
+            },
+        );
+    }
+
     let mut methods = Vec::with_capacity(file.class.methods.len());
     for method in &file.class.methods {
-        methods.push(compile_method(method, &mut cp)?);
+        methods.push(compile_method(method, &mut cp, &sigs)?);
     }
 
     Ok(Module {
@@ -37,7 +59,11 @@ pub fn compile_source_file(file: &SourceFile) -> Result<Module, CodegenError> {
     })
 }
 
-fn compile_method(method: &MethodDecl, cp: &mut ConstantPool) -> Result<MethodDescriptor, CodegenError> {
+fn compile_method(
+    method: &MethodDecl,
+    cp: &mut ConstantPool,
+    sigs: &HashMap<String, MethodSig>,
+) -> Result<MethodDescriptor, CodegenError> {
     if !method.is_static {
         return Err(CodegenError::Unsupported(
             "instance methods (object model lands in milestone 5)".to_string(),
@@ -49,16 +75,21 @@ fn compile_method(method: &MethodDecl, cp: &mut ConstantPool) -> Result<MethodDe
     let descriptor = method_descriptor(&param_types, &method.return_type);
     let descriptor_index = cp.add_type_desc(&descriptor);
 
-    let mut emitter = Emitter::new(cp);
+    let mut emitter = Emitter::new(cp, sigs);
+    emitter.push_scope();
+    for param in &method.params {
+        emitter.declare_local(param.name.clone(), expr_ty_of(&param.ty));
+    }
     for stmt in &method.body {
-        compile_stmt(stmt, &mut emitter)?;
+        emitter.compile_stmt(stmt)?;
     }
-    // Body without a trailing explicit return in a void method: fall off the end.
-    if matches!(method.body.last(), None | Some(Stmt::Expr(_))) {
-        if method.return_type == nl_syntax::ast::Type::Void {
-            emitter.code.push(Opcode::Return as u8);
-        }
+    // Body without a guaranteed trailing return: safe to fall off the end
+    // only for void methods (a missing return in a non-void method is a
+    // compile error left to milestone 2's control-flow checks).
+    if method.return_type == Type::Void {
+        emitter.code.push(Opcode::Return as u8);
     }
+    emitter.pop_scope();
 
     let mut flags = 0u16;
     flags |= match method.visibility {
@@ -73,27 +104,10 @@ fn compile_method(method: &MethodDecl, cp: &mut ConstantPool) -> Result<MethodDe
         name_index,
         descriptor_index,
         throws_types: Vec::new(),
-        max_locals: method.params.len() as u16,
+        max_locals: emitter.max_locals(),
         max_stack: emitter.max_stack(),
         code: emitter.code,
         exception_table: Vec::new(),
         line_table: Vec::new(),
     })
-}
-
-fn compile_stmt(stmt: &Stmt, emitter: &mut Emitter) -> Result<(), CodegenError> {
-    match stmt {
-        Stmt::Return(Some(expr)) => {
-            emitter.compile_expr(expr)?;
-            emitter.code.push(Opcode::ReturnValue as u8);
-        }
-        Stmt::Return(None) => {
-            emitter.code.push(Opcode::Return as u8);
-        }
-        Stmt::Expr(expr) => {
-            emitter.compile_expr(expr)?;
-            emitter.code.push(Opcode::Pop as u8);
-        }
-    }
-    Ok(())
 }

@@ -1,0 +1,18 @@
+---
+title: "for loop with multiple init/step variables"
+file_separator: "#NLFILE"
+expected_exit_code: 50
+expected_stdout: ""
+---
+
+#NLFILE phase2/forloop/Main.nl
+namespace phase2.forloop;
+class Main {
+	public static int main(string[] args) {
+		int sum = 0;
+		for (int i = 0, j = 10; i < j; i++, j--) {
+			sum += i + j;
+		}
+		return sum;
+	}
+}

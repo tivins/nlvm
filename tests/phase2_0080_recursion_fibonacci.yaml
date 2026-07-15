@@ -1,0 +1,21 @@
+---
+title: "recursive fibonacci"
+file_separator: "#NLFILE"
+expected_exit_code: 55
+expected_stdout: ""
+---
+
+#NLFILE phase2/fibonacci/Main.nl
+namespace phase2.fibonacci;
+class Main {
+	private static int fib(int n) {
+		if (n < 2) {
+			return n;
+		}
+		return fib(n - 1) + fib(n - 2);
+	}
+
+	public static int main(string[] args) {
+		return fib(10);
+	}
+}

@@ -1,0 +1,21 @@
+---
+title: "recursive factorial"
+file_separator: "#NLFILE"
+expected_exit_code: 120
+expected_stdout: ""
+---
+
+#NLFILE phase2/factorial/Main.nl
+namespace phase2.factorial;
+class Main {
+	private static int factorial(int n) {
+		if (n <= 1) {
+			return 1;
+		}
+		return n * factorial(n - 1);
+	}
+
+	public static int main(string[] args) {
+		return factorial(5);
+	}
+}

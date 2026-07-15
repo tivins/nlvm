@@ -1,0 +1,21 @@
+---
+title: "logical && / || short-circuit in a condition"
+file_separator: "#NLFILE"
+expected_exit_code: 1
+expected_stdout: ""
+---
+
+#NLFILE phase2/logical/Main.nl
+namespace phase2.logical;
+class Main {
+	private static bool inRange(int n) {
+		return n >= 0 && n < 10;
+	}
+
+	public static int main(string[] args) {
+		if (inRange(5) && !inRange(15)) {
+			return 1;
+		}
+		return 0;
+	}
+}

@@ -1,0 +1,19 @@
+---
+title: "nested block scope shadows outer variable"
+file_separator: "#NLFILE"
+expected_exit_code: 1
+expected_stdout: ""
+---
+
+#NLFILE phase2/shadow/Main.nl
+namespace phase2.shadow;
+class Main {
+	public static int main(string[] args) {
+		int x = 1;
+		{
+			int x = 2;
+			x = x + 10;
+		}
+		return x;
+	}
+}

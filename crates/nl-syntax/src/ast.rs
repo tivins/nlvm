@@ -55,6 +55,29 @@ pub type Block = Vec<Stmt>;
 pub enum Stmt {
     Return(Option<Expr>),
     Expr(Expr),
+    VarDecl {
+        ty: Option<Type>,
+        name: String,
+        init: Expr,
+    },
+    If {
+        cond: Expr,
+        then_branch: Block,
+        else_branch: Option<Block>,
+    },
+    While {
+        cond: Expr,
+        body: Block,
+    },
+    For {
+        init: Vec<Stmt>,
+        cond: Option<Expr>,
+        step: Vec<Expr>,
+        body: Block,
+    },
+    Break,
+    Continue,
+    Block(Block),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +110,11 @@ pub enum Expr {
     BoolLit(bool),
     StringLit(String),
     NullLit,
+    Ident(String),
+    Assign(String, Box<Expr>),
+    Call(String, Vec<Expr>),
+    PostIncr(String),
+    PostDecr(String),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
 }
