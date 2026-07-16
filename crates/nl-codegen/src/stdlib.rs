@@ -23,6 +23,7 @@ pub fn is_stdlib_class(fqcn: &str) -> bool {
             | "system.io.Path"
             | "system.SecureRandom"
             | "system.Uuid"
+            | "system.Env"
             | "system.net.TcpStream"
             | "system.net.Http"
             | "system.thread.Thread"
@@ -240,6 +241,12 @@ pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type
         ("system.SecureRandom", "nextInt", 0) => Some((vec![], Type::Int)),
         ("system.SecureRandom", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
         ("system.Uuid", "random", 0) => Some((vec![], Type::StringT)),
+        // stdlib.md § system.Env — mirrors `nl_sema::stdlib::lookup`'s
+        // matching entries.
+        ("system.Env", "get", 1) => Some((vec![Type::StringT], nullable(Type::StringT))),
+        ("system.Env", "set", 2) => Some((vec![Type::StringT, Type::StringT], Type::Void)),
+        ("system.Env", "remove", 1) => Some((vec![Type::StringT], Type::Void)),
+        ("system.Env", "list", 0) => Some((vec![], string_array)),
         ("system.net.TcpStream", "connect", 2) => Some((vec![Type::StringT, Type::Int], tcp_stream())),
         ("system.net.Http", "get", 1) => Some((vec![Type::StringT], http_response())),
         ("system.net.Http", "post", 2) => Some((vec![Type::StringT, Type::StringT], http_response())),

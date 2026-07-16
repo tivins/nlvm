@@ -11,7 +11,8 @@
 //! Only part of stdlib.md is covered so far (PLAN.md Phase 6): output,
 //! int/float/bool parsing/formatting, system.String, file I/O
 //! (`system.io.File`/`FileHandle`/`Directory`/`Path`, including `FileMode`
-//! and `glob` — see below), and `system.Random`/`SecureRandom`/`Uuid`.
+//! and `glob` — see below), `system.Random`/`SecureRandom`/`Uuid`, and
+//! `system.Env`.
 //! Network, threads, etc. are future work.
 //!
 //! ## `system.io.FileMode`
@@ -146,6 +147,12 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.SecureRandom", "nextInt", 0) => Some((vec![], Type::Int)),
         ("system.SecureRandom", "nextInt", 1) => Some((vec![Type::Int], Type::Int)),
         ("system.Uuid", "random", 0) => Some((vec![], Type::StringT)),
+        // stdlib.md § system.Env — environment variables of the current
+        // process; all methods static, no checked exceptions declared.
+        ("system.Env", "get", 1) => Some((vec![Type::StringT], nullable(Type::StringT))),
+        ("system.Env", "set", 2) => Some((vec![Type::StringT, Type::StringT], Type::Void)),
+        ("system.Env", "remove", 1) => Some((vec![Type::StringT], Type::Void)),
+        ("system.Env", "list", 0) => Some((vec![], string_array)),
         // stdlib.md § system.net.TcpStream/Http — `connect`/`get`/`post`
         // are the only *static* network methods (everything else on these
         // classes is instance dispatch, see `instance_lookup`).

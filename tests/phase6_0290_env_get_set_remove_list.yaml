@@ -1,0 +1,40 @@
+---
+title: "Phase 6 — system.Env"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "true true true true"
+---
+
+#NLFILE phase6/env/Main.nl
+namespace phase6.env;
+class Main {
+	public static int main(string[] args) {
+		string|null before = system.Env.get("NLVM_PHASE6_ENV_TEST");
+		bool wasUnset = (before == null);
+
+		system.Env.set("NLVM_PHASE6_ENV_TEST", "hello");
+		string|null after = system.Env.get("NLVM_PHASE6_ENV_TEST");
+		bool gotValue = (after == "hello");
+
+		string[] names = system.Env.list();
+		bool foundInList = false;
+		for (int i = 0; i < names.length(); i++) {
+			if (names[i] == "NLVM_PHASE6_ENV_TEST") {
+				foundInList = true;
+			}
+		}
+
+		system.Env.remove("NLVM_PHASE6_ENV_TEST");
+		string|null removed = system.Env.get("NLVM_PHASE6_ENV_TEST");
+		bool wasRemoved = (removed == null);
+
+		system.Out.print(system.Bool.toString(wasUnset));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(gotValue));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(foundInList));
+		system.Out.print(" ");
+		system.Out.print(system.Bool.toString(wasRemoved));
+		return 0;
+	}
+}

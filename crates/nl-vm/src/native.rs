@@ -19,7 +19,8 @@
 //! `system.text.Encoding` (also backed by `crate::mini_regex`, plus
 //! `crate::text` for base64 and `RegexMatch` construction), and
 //! `system.time.DateTime`/`system.time.TimeZone` (calendar math and IANA
-//! zone lookups in `crate::mini_tz`). `system.Env` is future work.
+//! zone lookups in `crate::mini_tz`), and `system.Env` (thin wrapper over
+//! `std::env`).
 //!
 //! ## `system.List<T>` / `system.Map<K,V>`
 //!
@@ -87,6 +88,7 @@ pub fn is_native_class(fqcn: &str) -> bool {
             | "system.io.Path"
             | "system.SecureRandom"
             | "system.Uuid"
+            | "system.Env"
             | "system.net.TcpStream"
             | "system.net.Http"
             | "system.thread.Thread"
@@ -358,6 +360,45 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
         // stdlib.md § system.Uuid — UUID v4, 122 random bits from the same
         // CSPRNG as SecureRandom, version/variant nibbles set per RFC 4122.
         ("system.Uuid", "random") => Ok(Some(Value::Str(Arc::new(uuid_v4()?)))),
+        // stdlib.md § system.Env — thin wrapper over the process
+        // environment. `set`/`remove` call `std::env::set_var`/`remove_var`,
+        // which Rust itself marks `unsafe` (since 1.82) because mutating the
+        // environment races with any other thread reading it concurrently —
+        // exactly the UB stdlib.md's own thread-safety note warns about
+        // ("Synchronize with `system.thread.Mutex`, or set all variables
+        // from the main thread before spawning threads"). The VM has no way
+        // to enforce that from here; it's on the NL program to follow it.
+        ("system.Env", "get") => {
+            let name = str_at(&args, 0)?;
+            match std::env::var(&name) {
+                Ok(value) => Ok(Some(Value::Str(Arc::new(value)))),
+                Err(_) => Ok(Some(Value::Null)),
+            }
+        }
+        ("system.Env", "set") => {
+            let name = str_at(&args, 0)?;
+            let value = str_at(&args, 1)?;
+            // SAFETY: see the module-level comment above this match arm —
+            // synchronization across threads is the calling NL program's
+            // responsibility, per stdlib.md.
+            unsafe { std::env::set_var(&name, &value) };
+            Ok(None)
+        }
+        ("system.Env", "remove") => {
+            let name = str_at(&args, 0)?;
+            // SAFETY: see the module-level comment above this match arm.
+            unsafe { std::env::remove_var(&name) };
+            Ok(None)
+        }
+        ("system.Env", "list") => {
+            let mut names: Vec<String> = std::env::vars().map(|(k, _)| k).collect();
+            // Iteration order isn't guaranteed stable across platforms;
+            // sorted for deterministic `expected_stdout` in tests (same
+            // rationale as `system.io.Directory.list`).
+            names.sort();
+            let values = names.into_iter().map(|n| Value::Str(Arc::new(n))).collect();
+            Ok(Some(Value::Array(Arc::new(Mutex::new(values)))))
+        }
         // stdlib.md § system.net.TcpStream — the one *static* TcpStream
         // method (the rest is instance dispatch, see `dispatch_tcp_stream`);
         // same object-building shape as `system.io.File.open`.
