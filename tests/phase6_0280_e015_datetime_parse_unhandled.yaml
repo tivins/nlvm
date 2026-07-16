@@ -1,0 +1,14 @@
+---
+title: "E015 — system.time.DateTime.parse (FormatException) must be caught or declared"
+file_separator: "#NLFILE"
+expected_compile_error: "E015"
+---
+
+#NLFILE phase6/e015datetimeparse/Main.nl
+namespace phase6.e015datetimeparse;
+class Main {
+	public static int main(string[] args) {
+		system.time.DateTime.parse("2025-03-01T14:30:00Z");
+		return 0;
+	}
+}

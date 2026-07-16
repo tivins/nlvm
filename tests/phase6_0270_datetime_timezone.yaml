@@ -1,0 +1,67 @@
+---
+title: "Phase 6 — system.time.DateTime/TimeZone"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "fmtok gettersok zutcok utcoffok parisoffok summeroffok toutcok bad tzcaught nowok"
+---
+
+#NLFILE phase6/datetime/Main.nl
+namespace phase6.datetime;
+class Main {
+	public static int main(string[] args) throws FormatException {
+		auto dt = system.time.DateTime.parse("2025-03-01T14:30:45+01:00");
+		system.Out.print(dt.format("yyyy-MM-dd HH:mm:ss") == "2025-03-01 14:30:45" ? "fmtok" : "fmtbad");
+		system.Out.print(" ");
+
+		bool getters = dt.getYear() == 2025 && dt.getMonth() == 3 && dt.getDay() == 1
+			&& dt.getHour() == 14 && dt.getMinute() == 30 && dt.getSecond() == 45;
+		system.Out.print(getters ? "gettersok" : "gettersbad");
+		system.Out.print(" ");
+
+		auto zutc = system.time.DateTime.parse("2025-03-01T13:30:45Z");
+		system.Out.print(zutc.getHour() == 13 ? "zutcok" : "zutcbad");
+		system.Out.print(" ");
+
+		auto utc = system.time.TimeZone.get("UTC");
+		system.Out.print(utc.getOffsetMinutes(dt) == 0 ? "utcoffok" : "utcoffbad");
+		system.Out.print(" ");
+
+		auto paris = system.time.TimeZone.get("Europe/Paris");
+		auto winter = system.time.DateTime.parse("2023-01-15T12:00:00Z");
+		system.Out.print(paris.getOffsetMinutes(winter) == 60 ? "parisoffok" : "parisoffbad");
+		system.Out.print(" ");
+
+		auto summer = system.time.DateTime.parse("2023-07-15T12:00:00Z");
+		system.Out.print(paris.getOffsetMinutes(summer) == 120 ? "summeroffok" : "summeroffbad");
+		system.Out.print(" ");
+
+		auto backToUtc = dt.toUtc();
+		system.Out.print(backToUtc.getTimeZone().getId() == "UTC" && backToUtc.getHour() == 13 ? "toutcok" : "toutcbad");
+		system.Out.print(" ");
+
+		string badParse = "notbad";
+		try {
+			system.time.DateTime.parse("garbage");
+			badParse = "nothrown";
+		} catch (FormatException e) {
+			badParse = "bad";
+		}
+		system.Out.print(badParse);
+		system.Out.print(" ");
+
+		string tzCaught = "nothrown";
+		try {
+			system.time.TimeZone.get("Not/A_Real_Zone");
+		} catch (IllegalArgumentException e) {
+			tzCaught = "tzcaught";
+		}
+		system.Out.print(tzCaught);
+		system.Out.print(" ");
+
+		auto now = system.time.DateTime.now();
+		auto nowParis = system.time.DateTime.now(paris);
+		system.Out.print(now.getYear() >= 2024 && nowParis.getYear() >= 2024 ? "nowok" : "nowbad");
+
+		return 0;
+	}
+}

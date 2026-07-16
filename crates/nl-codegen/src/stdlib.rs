@@ -29,6 +29,8 @@ pub fn is_stdlib_class(fqcn: &str) -> bool {
             | "system.ps.Process"
             | "system.text.Regex"
             | "system.text.Encoding"
+            | "system.time.DateTime"
+            | "system.time.TimeZone"
     )
 }
 
@@ -62,6 +64,14 @@ pub(crate) fn process_result() -> Type {
 
 fn regex_match() -> Type {
     Type::Named("system.text.RegexMatch".to_string())
+}
+
+fn date_time() -> Type {
+    Type::Named("system.time.DateTime".to_string())
+}
+
+fn time_zone() -> Type {
+    Type::Named("system.time.TimeZone".to_string())
 }
 
 /// `system.io.FileMode.<name>` int constant, or `None` if unknown — mirrors
@@ -118,6 +128,18 @@ pub fn instance_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Ty
         ("system.thread.Semaphore", "acquire", 0) => Some((vec![], Type::Void)),
         ("system.thread.Semaphore", "release", 0) => Some((vec![], Type::Void)),
         ("system.thread.Semaphore", "tryAcquire", 0) => Some((vec![], Type::Bool)),
+        ("system.time.DateTime", "getYear", 0) => Some((vec![], Type::Int)),
+        ("system.time.DateTime", "getMonth", 0) => Some((vec![], Type::Int)),
+        ("system.time.DateTime", "getDay", 0) => Some((vec![], Type::Int)),
+        ("system.time.DateTime", "getHour", 0) => Some((vec![], Type::Int)),
+        ("system.time.DateTime", "getMinute", 0) => Some((vec![], Type::Int)),
+        ("system.time.DateTime", "getSecond", 0) => Some((vec![], Type::Int)),
+        ("system.time.DateTime", "getTimeZone", 0) => Some((vec![], time_zone())),
+        ("system.time.DateTime", "withTimeZone", 1) => Some((vec![time_zone()], date_time())),
+        ("system.time.DateTime", "toUtc", 0) => Some((vec![], date_time())),
+        ("system.time.DateTime", "format", 1) => Some((vec![Type::StringT], Type::StringT)),
+        ("system.time.TimeZone", "getId", 0) => Some((vec![], Type::StringT)),
+        ("system.time.TimeZone", "getOffsetMinutes", 1) => Some((vec![date_time()], Type::Int)),
         _ => None,
     }
 }
@@ -249,6 +271,13 @@ pub fn signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type
         ("system.text.Encoding", "base64Decode", 1) => {
             Some((vec![Type::StringT], Type::Array(Box::new(Type::Byte))))
         }
+        // stdlib.md § system.time.DateTime/TimeZone — mirrors
+        // `nl_sema::stdlib::lookup`'s matching entries.
+        ("system.time.DateTime", "now", 0) => Some((vec![], date_time())),
+        ("system.time.DateTime", "now", 1) => Some((vec![time_zone()], date_time())),
+        ("system.time.DateTime", "parse", 1) => Some((vec![Type::StringT], date_time())),
+        ("system.time.TimeZone", "getDefault", 0) => Some((vec![], time_zone())),
+        ("system.time.TimeZone", "get", 1) => Some((vec![Type::StringT], time_zone())),
         _ => None,
     }
 }

@@ -17,8 +17,9 @@
 //! `File.glob` (backed by `crate::mini_regex`, since patterns are matched
 //! as regex — see that module's doc comment), and `system.text.Regex`/
 //! `system.text.Encoding` (also backed by `crate::mini_regex`, plus
-//! `crate::text` for base64 and `RegexMatch` construction). `system.time`/
-//! `system.Env` are future work.
+//! `crate::text` for base64 and `RegexMatch` construction), and
+//! `system.time.DateTime`/`system.time.TimeZone` (calendar math and IANA
+//! zone lookups in `crate::mini_tz`). `system.Env` is future work.
 //!
 //! ## `system.List<T>` / `system.Map<K,V>`
 //!
@@ -92,6 +93,8 @@ pub fn is_native_class(fqcn: &str) -> bool {
             | "system.ps.Process"
             | "system.text.Regex"
             | "system.text.Encoding"
+            | "system.time.DateTime"
+            | "system.time.TimeZone"
     )
 }
 
@@ -527,6 +530,34 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             let bytes = crate::text::base64_decode(&s).map_err(|e| throw_native("FormatException", e))?;
             Ok(Some(array_from_bytes(bytes)))
         }
+        // stdlib.md § system.time.DateTime — `now()`/`now(zone)` share one
+        // match arm (arity decides which, same trick as
+        // `SecureRandom.nextInt`); `parse` throws `FormatException` per the
+        // declared signature (checked, see `nl_sema::stdlib::throws`).
+        ("system.time.DateTime", "now") => {
+            let zone = match args.first() {
+                Some(v) => timezone_id(v)?,
+                None => crate::mini_tz::default_zone_id(),
+            };
+            Ok(Some(new_datetime_object(crate::mini_tz::now_epoch_secs(), zone)))
+        }
+        ("system.time.DateTime", "parse") => {
+            let s = str_at(&args, 0)?;
+            let (epoch, zone) = crate::mini_tz::parse_iso8601(&s).map_err(|e| throw_native("FormatException", e))?;
+            Ok(Some(new_datetime_object(epoch, zone)))
+        }
+        // stdlib.md § system.time.TimeZone — `get` validates the id by
+        // actually resolving an offset for it (unknown id or unparseable
+        // `/usr/share/zoneinfo` entry -> `IllegalArgumentException`,
+        // unchecked, same "bad input, no `throws` documented" convention as
+        // `Random.nextInt(bound<=0)`).
+        ("system.time.TimeZone", "getDefault") => Ok(Some(new_timezone_object(crate::mini_tz::default_zone_id()))),
+        ("system.time.TimeZone", "get") => {
+            let id = str_at(&args, 0)?;
+            crate::mini_tz::zone_offset_seconds(&id, crate::mini_tz::now_epoch_secs())
+                .map_err(|e| throw_native("IllegalArgumentException", e))?;
+            Ok(Some(new_timezone_object(id)))
+        }
         _ => Err(VmError::MethodNotFound(format!("{fqcn}.{name}"))),
     }
 }
@@ -803,7 +834,13 @@ pub(crate) fn throw_native(class_name: &str, message: impl Into<String>) -> VmEr
 /// which is why `dispatch_native_instance` takes `program`); `Random`
 /// instead keeps its PRNG state directly on the object (`"__state__"`, see
 /// `is_random_class`/`dispatch_random` below) and ignores `program`
-/// entirely.
+/// entirely. `system.time.DateTime`/`system.time.TimeZone` are the same
+/// state-on-the-object shape as `Random` (`"__epoch__"`/`"__zone__"`,
+/// `"__id__"` — see `dispatch_datetime`/`dispatch_timezone` below); neither
+/// is ever constructed with `new` (only by the static factories `now`/
+/// `parse`/`getDefault`/`get`, wired in `dispatch` above, the same way
+/// `File.open` builds a `FileHandle`), so unlike `Random` they never appear
+/// at `NEW`/`INVOKE_SPECIAL <construct>`.
 pub fn is_native_instance_class(fqcn: &str) -> bool {
     matches!(
         fqcn,
@@ -815,6 +852,8 @@ pub fn is_native_instance_class(fqcn: &str) -> bool {
             | "system.thread.Thread"
             | "system.thread.Mutex"
             | "system.thread.Semaphore"
+            | "system.time.DateTime"
+            | "system.time.TimeZone"
     )
 }
 
@@ -844,6 +883,8 @@ pub fn dispatch_native_instance(
         "system.thread.Thread" => return dispatch_thread(program, name, receiver, args),
         "system.thread.Mutex" => return dispatch_mutex(program, name, receiver, args),
         "system.thread.Semaphore" => return dispatch_semaphore(program, name, receiver, args),
+        "system.time.DateTime" => return dispatch_datetime(name, receiver, args),
+        "system.time.TimeZone" => return dispatch_timezone(name, receiver, args),
         _ => {}
     }
     let id = match lock(&obj).fields.get("__fd__") {
@@ -1041,6 +1082,117 @@ fn dispatch_random(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result
     };
     lock(&obj).fields.insert("__state__".to_string(), Value::Int(state as i64));
     Ok(Some(result))
+}
+
+/// stdlib.md § system.time.DateTime/TimeZone — a `DateTime` is a UTC instant
+/// (`"__epoch__"`, whole seconds since the Unix epoch — no sub-second
+/// resolution) plus a zone id (`"__zone__"`, either an IANA name like
+/// `"Europe/Paris"` or the `"+HH:MM"`/`"-HH:MM"`/`"UTC"` forms
+/// `crate::mini_tz` also accepts); a `TimeZone` is just that same id
+/// (`"__id__"`) wrapped as its own object so `getTimeZone()`/`TimeZone.get`
+/// have something to return. All the actual calendar math and zone-offset
+/// lookups live in `crate::mini_tz`; this module only shuttles object fields
+/// in and out of it.
+fn new_datetime_object(epoch: i64, zone: String) -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("__epoch__".to_string(), Value::Int(epoch));
+    fields.insert("__zone__".to_string(), Value::Str(Arc::new(zone)));
+    Value::Object(Arc::new(Mutex::new(Object { class_name: "system.time.DateTime".to_string(), fields })))
+}
+
+fn new_timezone_object(id: String) -> Value {
+    let mut fields = HashMap::new();
+    fields.insert("__id__".to_string(), Value::Str(Arc::new(id)));
+    Value::Object(Arc::new(Mutex::new(Object { class_name: "system.time.TimeZone".to_string(), fields })))
+}
+
+/// Extracts `__id__` from a `TimeZone` argument (`DateTime.now(zone)`).
+fn timezone_id(v: &Value) -> Result<String, VmError> {
+    let Value::Object(obj) = v else {
+        return Err(VmError::Malformed("expected TimeZone argument to native call"));
+    };
+    match lock(obj).fields.get("__id__") {
+        Some(Value::Str(s)) => Ok((**s).clone()),
+        _ => Err(VmError::Malformed("malformed TimeZone object")),
+    }
+}
+
+fn dispatch_datetime(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected DateTime receiver"));
+    };
+    let (epoch, zone) = {
+        let locked = lock(&obj);
+        let epoch = match locked.fields.get("__epoch__") {
+            Some(Value::Int(e)) => *e,
+            _ => return Err(VmError::Malformed("malformed DateTime object")),
+        };
+        let zone = match locked.fields.get("__zone__") {
+            Some(Value::Str(z)) => (**z).clone(),
+            _ => return Err(VmError::Malformed("malformed DateTime object")),
+        };
+        (epoch, zone)
+    };
+    match name {
+        "getTimeZone" => Ok(Some(new_timezone_object(zone))),
+        "withTimeZone" => Ok(Some(new_datetime_object(epoch, timezone_id(&expect_object(&mut args)?)?))),
+        "toUtc" => Ok(Some(new_datetime_object(epoch, "UTC".to_string()))),
+        "format" => {
+            let pattern = expect_str(&mut args)?;
+            let offset = crate::mini_tz::zone_offset_seconds(&zone, epoch)
+                .map_err(|e| throw_native("IllegalArgumentException", e))?;
+            Ok(Some(Value::Str(Arc::new(crate::mini_tz::format_datetime(epoch, offset, &pattern)))))
+        }
+        "getYear" | "getMonth" | "getDay" | "getHour" | "getMinute" | "getSecond" => {
+            let offset = crate::mini_tz::zone_offset_seconds(&zone, epoch)
+                .map_err(|e| throw_native("IllegalArgumentException", e))?;
+            let (y, mo, d, hh, mi, ss) = crate::mini_tz::epoch_to_local(epoch, offset);
+            let v = match name {
+                "getYear" => y,
+                "getMonth" => mo as i64,
+                "getDay" => d as i64,
+                "getHour" => hh as i64,
+                "getMinute" => mi as i64,
+                _ => ss as i64, // "getSecond"
+            };
+            Ok(Some(Value::Int(v)))
+        }
+        _ => Err(VmError::MethodNotFound(format!("system.time.DateTime.{name}"))),
+    }
+}
+
+fn dispatch_timezone(name: &str, receiver: &Value, mut args: Vec<Value>) -> Result<Option<Value>, VmError> {
+    let Value::Object(obj) = receiver else {
+        return Err(VmError::Malformed("expected TimeZone receiver"));
+    };
+    let id = match lock(&obj).fields.get("__id__") {
+        Some(Value::Str(s)) => (**s).clone(),
+        _ => return Err(VmError::Malformed("malformed TimeZone object")),
+    };
+    match name {
+        "getId" => Ok(Some(Value::Str(Arc::new(id)))),
+        "getOffsetMinutes" => {
+            let at = expect_object(&mut args)?;
+            let Value::Object(at_obj) = &at else {
+                return Err(VmError::Malformed("expected DateTime argument to native call"));
+            };
+            let epoch = match lock(at_obj).fields.get("__epoch__") {
+                Some(Value::Int(e)) => *e,
+                _ => return Err(VmError::Malformed("malformed DateTime object")),
+            };
+            let offset = crate::mini_tz::zone_offset_seconds(&id, epoch)
+                .map_err(|e| throw_native("IllegalArgumentException", e))?;
+            Ok(Some(Value::Int((offset / 60) as i64)))
+        }
+        _ => Err(VmError::MethodNotFound(format!("system.time.TimeZone.{name}"))),
+    }
+}
+
+fn expect_object(args: &mut Vec<Value>) -> Result<Value, VmError> {
+    match args.pop() {
+        Some(v @ Value::Object(_)) => Ok(v),
+        _ => Err(VmError::Malformed("expected object argument to native call")),
+    }
 }
 
 /// stdlib.md § system.net.TcpListener/TcpStream/UdpSocket — real OS

@@ -57,6 +57,14 @@ fn regex_match() -> Type {
     Type::Named("system.text.RegexMatch".to_string())
 }
 
+fn date_time() -> Type {
+    Type::Named("system.time.DateTime".to_string())
+}
+
+fn time_zone() -> Type {
+    Type::Named("system.time.TimeZone".to_string())
+}
+
 /// `system.io.FileMode.<name>` — `None` if `fqcn` isn't `"system.io.FileMode"`
 /// or `name` isn't one of the six modes stdlib.md documents. See this
 /// module's doc comment.
@@ -188,6 +196,14 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.text.Encoding", "base64Decode", 1) => {
             Some((vec![Type::StringT], Type::Array(Box::new(Type::Byte))))
         }
+        // stdlib.md § system.time.DateTime/TimeZone — factory/parsing
+        // statics; accessors/formatting are instance methods, see
+        // `instance_lookup` below.
+        ("system.time.DateTime", "now", 0) => Some((vec![], date_time())),
+        ("system.time.DateTime", "now", 1) => Some((vec![time_zone()], date_time())),
+        ("system.time.DateTime", "parse", 1) => Some((vec![Type::StringT], date_time())),
+        ("system.time.TimeZone", "getDefault", 0) => Some((vec![], time_zone())),
+        ("system.time.TimeZone", "get", 1) => Some((vec![Type::StringT], time_zone())),
         _ => None,
     }
 }
@@ -235,6 +251,8 @@ pub fn is_native_instance(fqcn: &str) -> bool {
             | "system.thread.Thread"
             | "system.thread.Mutex"
             | "system.thread.Semaphore"
+            | "system.time.DateTime"
+            | "system.time.TimeZone"
     )
 }
 
@@ -276,6 +294,18 @@ pub fn instance_lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>
         ("system.thread.Semaphore", "acquire", 0) => Some((vec![], Type::Void)),
         ("system.thread.Semaphore", "release", 0) => Some((vec![], Type::Void)),
         ("system.thread.Semaphore", "tryAcquire", 0) => Some((vec![], Type::Bool)),
+        ("system.time.DateTime", "getYear", 0) => Some((vec![], Type::Int)),
+        ("system.time.DateTime", "getMonth", 0) => Some((vec![], Type::Int)),
+        ("system.time.DateTime", "getDay", 0) => Some((vec![], Type::Int)),
+        ("system.time.DateTime", "getHour", 0) => Some((vec![], Type::Int)),
+        ("system.time.DateTime", "getMinute", 0) => Some((vec![], Type::Int)),
+        ("system.time.DateTime", "getSecond", 0) => Some((vec![], Type::Int)),
+        ("system.time.DateTime", "getTimeZone", 0) => Some((vec![], time_zone())),
+        ("system.time.DateTime", "withTimeZone", 1) => Some((vec![time_zone()], date_time())),
+        ("system.time.DateTime", "toUtc", 0) => Some((vec![], date_time())),
+        ("system.time.DateTime", "format", 1) => Some((vec![Type::StringT], Type::StringT)),
+        ("system.time.TimeZone", "getId", 0) => Some((vec![], Type::StringT)),
+        ("system.time.TimeZone", "getOffsetMinutes", 1) => Some((vec![date_time()], Type::Int)),
         _ => None,
     }
 }
@@ -306,6 +336,7 @@ pub fn throws(fqcn: &str, name: &str) -> &'static [&'static str] {
         ("system.thread.Thread", "sleep") => &["InterruptedException"],
         ("system.ps.Process", "run" | "setCwd") => &["IOException"],
         ("system.text.Encoding", "base64Decode") => &["FormatException"],
+        ("system.time.DateTime", "parse") => &["FormatException"],
         _ => &[],
     }
 }
