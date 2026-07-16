@@ -1,0 +1,61 @@
+---
+title: "Phase 6 — three-way comparison operator `<=>` (spaceship)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "lt gt eq precAdd precRel mixedFloat mixedByte sorted 1,3,5,8"
+---
+
+#NLFILE phase6/spaceship/Main.nl
+namespace phase6.spaceship;
+class Main {
+	public static int main(string[] args) {
+		system.Out.print((3 <=> 5) == -1 ? "lt" : "ltbad");
+		system.Out.print(" ");
+		system.Out.print((5 <=> 3) == 1 ? "gt" : "gtbad");
+		system.Out.print(" ");
+		system.Out.print((5 <=> 5) == 0 ? "eq" : "eqbad");
+		system.Out.print(" ");
+
+		// `<=>` (level 5) binds tighter than `+` binds looser than... no:
+		// additive (level 4) binds *tighter* than `<=>` (level 5), so
+		// `1 + 2 <=> 4` parses as `(1 + 2) <=> 4` = `3 <=> 4` = -1.
+		system.Out.print((1 + 2 <=> 4) == -1 ? "precAdd" : "precAddbad");
+		system.Out.print(" ");
+
+		// `<=>` (level 5) binds tighter than relational `<` (level 6), so
+		// `3 <=> 5 < 0` parses as `(3 <=> 5) < 0` = `-1 < 0` = true, not
+		// `3 <=> (5 < 0)` (which would be a type error: `<=>` doesn't
+		// accept a `bool` operand).
+		system.Out.print(3 <=> 5 < 0 ? "precRel" : "precRelbad");
+		system.Out.print(" ");
+
+		// int/float widening, same rule as `<`/`>`/`==`.
+		system.Out.print((3.0 <=> 2) == 1 ? "mixedFloat" : "mixedFloatbad");
+		system.Out.print(" ");
+
+		// byte widens to int before `<=>`, same rule as `<`/`>` (cf.
+		// phase6_0330).
+		byte[] raw = system.text.Encoding.encodeUtf8("AB"); // raw[0]=65, raw[1]=66
+		system.Out.print((raw[0] <=> raw[1]) == -1 ? "mixedByte" : "mixedBytebad");
+		system.Out.print(" ");
+
+		// specs.md's own sort example: `<=>` never overflows, unlike `a - b`.
+		int[] numbers = new int[]{5, 3, 8, 1};
+		numbers.sort((int a, int b) => a <=> b);
+		system.Out.print(numbers[0] == 1 && numbers[1] == 3 && numbers[2] == 5 && numbers[3] == 8 ? "sorted" : "sortedbad");
+		system.Out.print(" ");
+		printInts(numbers);
+		return 0;
+	}
+
+	static void printInts(int[] values) {
+		int i = 0;
+		while (i < values.length()) {
+			system.Out.print(system.Int.toString(values[i]));
+			if (i < values.length() - 1) {
+				system.Out.print(",");
+			}
+			i++;
+		}
+	}
+}

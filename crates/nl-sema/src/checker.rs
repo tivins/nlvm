@@ -1048,6 +1048,11 @@ impl<'a> MethodChecker<'a> {
             BinOp::Lt | BinOp::Gt | BinOp::Le | BinOp::Ge => types::widen_numeric(lty, rty)
                 .map(|_| Type::Bool)
                 .ok_or_else(|| SemaError::BadBinaryOperator(op_symbol(op), types::display(lty), types::display(rty))),
+            // specs.md § Comparison operators — `<=>` always yields `int`
+            // (-1/0/1), never the widened operand type itself.
+            BinOp::Cmp3 => types::widen_numeric(lty, rty)
+                .map(|_| Type::Int)
+                .ok_or_else(|| SemaError::BadBinaryOperator(op_symbol(op), types::display(lty), types::display(rty))),
             BinOp::Eq | BinOp::Ne => {
                 if matches!(lty, Type::NullT) || matches!(rty, Type::NullT) {
                     let other = if matches!(lty, Type::NullT) { rty } else { lty };
@@ -1110,6 +1115,7 @@ fn op_symbol(op: BinOp) -> String {
         BinOp::Gt => ">",
         BinOp::Le => "<=",
         BinOp::Ge => ">=",
+        BinOp::Cmp3 => "<=>",
         BinOp::And => "&&",
         BinOp::Or => "||",
     }

@@ -1446,6 +1446,10 @@ impl<'a> Emitter<'a> {
                 self.op(Opcode::CmpGe, -1);
                 Ok(ExprTy::Bool)
             }
+            BinOp::Cmp3 => {
+                self.op(Opcode::CmpThreeWay, -1);
+                Ok(ExprTy::Int)
+            }
             BinOp::And | BinOp::Or => unreachable!("handled above"),
         }
     }

@@ -967,7 +967,7 @@ impl Parser {
     }
 
     fn parse_relational(&mut self) -> Result<Expr, SyntaxError> {
-        let mut lhs = self.parse_additive()?;
+        let mut lhs = self.parse_spaceship()?;
         loop {
             if self.is_keyword(Keyword::Instanceof) {
                 self.bump();
@@ -987,8 +987,21 @@ impl Parser {
                 break;
             };
             self.bump();
-            let rhs = self.parse_additive()?;
+            let rhs = self.parse_spaceship()?;
             lhs = Expr::Binary(op, Box::new(lhs), Box::new(rhs));
+        }
+        Ok(lhs)
+    }
+
+    /// specs.md § Operator precedence, level 5 — `<=>` (three-way
+    /// comparison), between additive (level 4, binds tighter) and
+    /// relational/`instanceof` (level 6, binds looser).
+    fn parse_spaceship(&mut self) -> Result<Expr, SyntaxError> {
+        let mut lhs = self.parse_additive()?;
+        while self.is_punct(Punct::Spaceship) {
+            self.bump();
+            let rhs = self.parse_additive()?;
+            lhs = Expr::Binary(BinOp::Cmp3, Box::new(lhs), Box::new(rhs));
         }
         Ok(lhs)
     }

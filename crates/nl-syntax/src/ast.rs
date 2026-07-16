@@ -204,6 +204,7 @@ pub enum BinOp {
     Gt,
     Le,
     Ge,
+    Cmp3,
     And,
     Or,
 }
