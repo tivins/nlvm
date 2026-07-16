@@ -1,0 +1,57 @@
+---
+title: "Phase 6 — dotted/generic native class types as class fields and method parameters"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "40000"
+---
+
+#NLFILE phase6/dotted_types/Counter.nl
+namespace phase6.dotted_types;
+
+// `system.thread.Mutex`/`system.List<int>` as a *class field* type, and
+// `system.thread.Mutex` as a *method parameter* type — previously only
+// exercised via `auto` local variables (parse_dotted_name), never in field
+// or parameter position, which goes through the separate parse_type_atom
+// path (parse_type -> parse_type_atom).
+class Counter {
+	system.thread.Mutex mutex;
+	system.List<int> history;
+	int value;
+
+	construct() {
+		this.mutex = new system.thread.Mutex();
+		this.history = new system.List<int>();
+		this.value = 0;
+	}
+
+	void increment(system.thread.Mutex externalLock) {
+		externalLock.lock();
+		this.value = this.value + 1;
+		this.history.pushBack(this.value);
+		externalLock.unlock();
+	}
+}
+
+#NLFILE phase6/dotted_types/Main.nl
+namespace phase6.dotted_types;
+use phase6.dotted_types.Counter;
+
+class Main {
+	public static int main(string[] args) throws InterruptedException {
+		auto counter = new Counter();
+		int n = 20000;
+		auto task = () => {
+			for (int i = 0; i < n; i++) {
+				counter.increment(counter.mutex);
+			}
+		};
+		auto t1 = new system.thread.Thread(task);
+		auto t2 = new system.thread.Thread(task);
+		t1.start();
+		t2.start();
+		t1.join();
+		t2.join();
+		system.Out.print(system.Int.toString(counter.history.size()));
+		return 0;
+	}
+}
