@@ -3,6 +3,7 @@ pub mod interpreter;
 mod mini_regex;
 mod native;
 mod net_http;
+mod text;
 pub mod program;
 pub mod value;
 

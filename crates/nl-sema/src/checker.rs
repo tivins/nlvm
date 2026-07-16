@@ -636,7 +636,24 @@ impl<'a> MethodChecker<'a> {
                     }
                 }
                 let target_ty = self.check_expr(target, assigned)?;
-                let Type::Named(fqcn) = &target_ty else {
+                // A nullable native result type (e.g. `system.text.Regex
+                // .matchFirst`'s `RegexMatch|null`) collapses to its named
+                // member here, same as `nl_codegen::expr::expr_ty_of`'s
+                // union-to-first-non-null-member rule — values are
+                // dynamically tagged at runtime (vm.md § Value
+                // representation), so this isn't narrowing, just recognizing
+                // which class's field table to consult. A real `null` at
+                // this point still throws `NullPointerException` at runtime
+                // (`GET_FIELD` on a null receiver), same as ever.
+                let named = match &target_ty {
+                    Type::Named(fqcn) => Some(fqcn.as_str()),
+                    Type::Union(members) => members.iter().find_map(|m| match m {
+                        Type::Named(fqcn) => Some(fqcn.as_str()),
+                        _ => None,
+                    }),
+                    _ => None,
+                };
+                let Some(fqcn) = named else {
                     return Ok(Type::Void);
                 };
                 // `entry.key`/`entry.value` on a `system.MapEntry<K, V>` —

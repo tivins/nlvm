@@ -1,0 +1,14 @@
+---
+title: "E015 — system.text.Encoding.base64Decode (FormatException) must be caught or declared"
+file_separator: "#NLFILE"
+expected_compile_error: "E015"
+---
+
+#NLFILE phase6/e015base64/Main.nl
+namespace phase6.e015base64;
+class Main {
+	public static int main(string[] args) {
+		system.text.Encoding.base64Decode("aGVsbG8=");
+		return 0;
+	}
+}

@@ -1,0 +1,43 @@
+---
+title: "Phase 6 — system.text.Encoding"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "lenok backok b64ok rtok caught"
+---
+
+#NLFILE phase6/textencoding/Main.nl
+namespace phase6.textencoding;
+class Main {
+	public static int main(string[] args) {
+		byte[] raw = system.text.Encoding.encodeUtf8("hello");
+		system.Out.print(raw.length() == 5 ? "lenok" : "lenbad");
+		system.Out.print(" ");
+
+		string back = system.text.Encoding.decodeUtf8(raw);
+		system.Out.print(back == "hello" ? "backok" : "backbad");
+		system.Out.print(" ");
+
+		string b64 = system.text.Encoding.base64Encode(raw);
+		system.Out.print(b64 == "aGVsbG8=" ? "b64ok" : "b64bad");
+		system.Out.print(" ");
+
+		try {
+			byte[] decoded = system.text.Encoding.base64Decode(b64);
+			string decodedBack = system.text.Encoding.decodeUtf8(decoded);
+			system.Out.print(decodedBack == "hello" ? "rtok" : "rtbad");
+		} catch (FormatException e) {
+			system.Out.print("rtthrew");
+		}
+		system.Out.print(" ");
+
+		string badResult = "nothrown";
+		try {
+			system.text.Encoding.base64Decode("!!!!");
+		} catch (FormatException e) {
+			badResult = "caught";
+		}
+		system.Out.print(badResult);
+
+		return 0;
+	}
+}

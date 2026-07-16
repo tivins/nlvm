@@ -15,8 +15,10 @@
 //! `system.List<T>`/`system.Map<K,V>` (see the section below), and
 //! `system.io.*` file I/O including `File.open`'s `FileMode` overload and
 //! `File.glob` (backed by `crate::mini_regex`, since patterns are matched
-//! as regex — see that module's doc comment). Threads, network, etc. are
-//! future work.
+//! as regex — see that module's doc comment), and `system.text.Regex`/
+//! `system.text.Encoding` (also backed by `crate::mini_regex`, plus
+//! `crate::text` for base64 and `RegexMatch` construction). `system.time`/
+//! `system.Env` are future work.
 //!
 //! ## `system.List<T>` / `system.Map<K,V>`
 //!
@@ -88,6 +90,8 @@ pub fn is_native_class(fqcn: &str) -> bool {
             | "system.net.Http"
             | "system.thread.Thread"
             | "system.ps.Process"
+            | "system.text.Regex"
+            | "system.text.Encoding"
     )
 }
 
@@ -450,6 +454,79 @@ pub fn dispatch(program: &Arc<Program>, fqcn: &str, name: &str, mut args: Vec<Va
             std::env::set_current_dir(&path).map_err(|e| throw_io_error(&path, e))?;
             Ok(None)
         }
+        // stdlib.md § system.text.Regex — `match` is a partial (anywhere)
+        // search like grep/`preg_match` (`mini_regex::Regex::find`, not
+        // `is_match`, which is reserved for `File.glob`'s whole-path
+        // semantics); an invalid pattern has no documented exception, so
+        // `IllegalArgumentException` (unchecked) is used, matching this
+        // codebase's other "bad input, no `throws` in stdlib.md" cases
+        // (`Random.nextInt(bound<=0)`, `Semaphore(initialCount<0)`).
+        ("system.text.Regex", "match") => {
+            let pattern = str_at(&args, 0)?;
+            let input = str_at(&args, 1)?;
+            let regex = compile_regex(&pattern)?;
+            Ok(Some(Value::Bool(regex.find(&input).is_some())))
+        }
+        ("system.text.Regex", "matchFirst") => {
+            let pattern = str_at(&args, 0)?;
+            let input = str_at(&args, 1)?;
+            let regex = compile_regex(&pattern)?;
+            let chars: Vec<char> = input.chars().collect();
+            match regex.find(&input) {
+                Some(m) => Ok(Some(crate::text::build_regex_match(&m, &chars))),
+                None => Ok(Some(Value::Null)),
+            }
+        }
+        ("system.text.Regex", "replace") => {
+            let pattern = str_at(&args, 0)?;
+            let input = str_at(&args, 1)?;
+            let replacement = str_at(&args, 2)?;
+            let regex = compile_regex(&pattern)?;
+            let chars: Vec<char> = input.chars().collect();
+            let mut out = String::new();
+            let mut last = 0;
+            for m in regex.find_all(&input) {
+                out.extend(&chars[last..m.start]);
+                out.push_str(&replacement);
+                last = m.end;
+            }
+            out.extend(&chars[last..]);
+            Ok(Some(Value::Str(Arc::new(out))))
+        }
+        ("system.text.Regex", "split") => {
+            let pattern = str_at(&args, 0)?;
+            let input = str_at(&args, 1)?;
+            let regex = compile_regex(&pattern)?;
+            let chars: Vec<char> = input.chars().collect();
+            let mut parts = Vec::new();
+            let mut last = 0;
+            for m in regex.find_all(&input) {
+                parts.push(Value::Str(Arc::new(chars[last..m.start].iter().collect())));
+                last = m.end;
+            }
+            parts.push(Value::Str(Arc::new(chars[last..].iter().collect())));
+            Ok(Some(Value::Array(Arc::new(Mutex::new(parts)))))
+        }
+        ("system.text.Regex", "escape") => Ok(Some(Value::Str(Arc::new(crate::mini_regex::escape(&str_at(&args, 0)?))))),
+        // stdlib.md § system.text.Encoding — byte<->string/base64
+        // conversion, no external crate (same stance as `crate::mini_regex`
+        // /`system.SecureRandom`'s `/dev/urandom`). `decodeUtf8` is lossy
+        // (replaces invalid sequences) rather than throwing: stdlib.md
+        // documents no exception for it, unlike `base64Decode`.
+        ("system.text.Encoding", "encodeUtf8") => Ok(Some(array_from_bytes(str_at(&args, 0)?.into_bytes()))),
+        ("system.text.Encoding", "decodeUtf8") => {
+            let bytes = bytes_from_array(args.first())?;
+            Ok(Some(Value::Str(Arc::new(String::from_utf8_lossy(&bytes).into_owned()))))
+        }
+        ("system.text.Encoding", "base64Encode") => {
+            let bytes = bytes_from_array(args.first())?;
+            Ok(Some(Value::Str(Arc::new(crate::text::base64_encode(&bytes)))))
+        }
+        ("system.text.Encoding", "base64Decode") => {
+            let s = str_at(&args, 0)?;
+            let bytes = crate::text::base64_decode(&s).map_err(|e| throw_native("FormatException", e))?;
+            Ok(Some(array_from_bytes(bytes)))
+        }
         _ => Err(VmError::MethodNotFound(format!("{fqcn}.{name}"))),
     }
 }
@@ -680,6 +757,34 @@ fn expect_bool(args: &mut Vec<Value>) -> Result<bool, VmError> {
 
 fn throw_format_error(message: impl Into<String>) -> VmError {
     throw_native("NumberFormatException", message)
+}
+
+/// Shared by every `system.text.Regex` dispatch arm — see that match arm's
+/// doc comment for why an invalid pattern is `IllegalArgumentException`.
+fn compile_regex(pattern: &str) -> Result<crate::mini_regex::Regex, VmError> {
+    crate::mini_regex::Regex::compile(pattern)
+        .map_err(|e| throw_native("IllegalArgumentException", format!("invalid regex pattern '{pattern}': {e}")))
+}
+
+/// Reads a `byte[]` argument's elements into an owned `Vec<u8>` — used by
+/// `system.text.Encoding`'s decode paths, which (unlike `SecureRandom.nextBytes`
+/// or `FileHandle.read`/`write`) don't already have a `byte[]` buffer to fill
+/// in place.
+fn bytes_from_array(arg: Option<&Value>) -> Result<Vec<u8>, VmError> {
+    let Some(Value::Array(arr)) = arg else {
+        return Err(VmError::Malformed("expected byte[] argument to native call"));
+    };
+    lock(arr)
+        .iter()
+        .map(|item| match item {
+            Value::Byte(b) => Ok(*b),
+            _ => Err(VmError::Malformed("expected byte[] argument to native call")),
+        })
+        .collect()
+}
+
+fn array_from_bytes(bytes: Vec<u8>) -> Value {
+    Value::Array(Arc::new(Mutex::new(bytes.into_iter().map(Value::Byte).collect())))
 }
 
 pub(crate) fn throw_native(class_name: &str, message: impl Into<String>) -> VmError {

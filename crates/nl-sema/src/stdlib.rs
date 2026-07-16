@@ -53,6 +53,10 @@ fn process_result() -> Type {
     Type::Named("system.ps.ProcessResult".to_string())
 }
 
+fn regex_match() -> Type {
+    Type::Named("system.text.RegexMatch".to_string())
+}
+
 /// `system.io.FileMode.<name>` — `None` if `fqcn` isn't `"system.io.FileMode"`
 /// or `name` isn't one of the six modes stdlib.md documents. See this
 /// module's doc comment.
@@ -170,6 +174,20 @@ pub fn lookup(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Type>, Type)> 
         ("system.ps.Process", "exit", 1) => Some((vec![Type::Int], Type::Void)),
         ("system.ps.Process", "getCwd", 0) => Some((vec![], Type::StringT)),
         ("system.ps.Process", "setCwd", 1) => Some((vec![Type::StringT], Type::Void)),
+        // stdlib.md § system.text.Regex/system.text.Encoding.
+        ("system.text.Regex", "match", 2) => Some((vec![Type::StringT, Type::StringT], Type::Bool)),
+        ("system.text.Regex", "matchFirst", 2) => Some((vec![Type::StringT, Type::StringT], nullable(regex_match()))),
+        ("system.text.Regex", "replace", 3) => {
+            Some((vec![Type::StringT, Type::StringT, Type::StringT], Type::StringT))
+        }
+        ("system.text.Regex", "split", 2) => Some((vec![Type::StringT, Type::StringT], string_array)),
+        ("system.text.Regex", "escape", 1) => Some((vec![Type::StringT], Type::StringT)),
+        ("system.text.Encoding", "encodeUtf8", 1) => Some((vec![Type::StringT], byte_array)),
+        ("system.text.Encoding", "decodeUtf8", 1) => Some((vec![byte_array.clone()], Type::StringT)),
+        ("system.text.Encoding", "base64Encode", 1) => Some((vec![byte_array], Type::StringT)),
+        ("system.text.Encoding", "base64Decode", 1) => {
+            Some((vec![Type::StringT], Type::Array(Box::new(Type::Byte))))
+        }
         _ => None,
     }
 }
@@ -194,6 +212,10 @@ pub fn result_field_ty(fqcn: &str, name: &str) -> Option<Type> {
         ("system.ps.ProcessResult", "exitCode") => Some(Type::Int),
         ("system.ps.ProcessResult", "stdout") => Some(Type::StringT),
         ("system.ps.ProcessResult", "stderr") => Some(Type::StringT),
+        // stdlib.md § system.text.Regex — `matchFirst`'s result type, same
+        // non-generic native result shape as `HttpResponse`.
+        ("system.text.RegexMatch", "fullMatch") => Some(Type::StringT),
+        ("system.text.RegexMatch", "groups") => Some(Type::Array(Box::new(Type::StringT))),
         _ => None,
     }
 }
@@ -283,6 +305,7 @@ pub fn throws(fqcn: &str, name: &str) -> &'static [&'static str] {
         ("system.thread.Thread", "join") => &["InterruptedException"],
         ("system.thread.Thread", "sleep") => &["InterruptedException"],
         ("system.ps.Process", "run" | "setCwd") => &["IOException"],
+        ("system.text.Encoding", "base64Decode") => &["FormatException"],
         _ => &[],
     }
 }

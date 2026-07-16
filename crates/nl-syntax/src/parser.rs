@@ -77,10 +77,12 @@ impl Parser {
     }
 
     /// Like `eat_ident`, but also accepts a reserved keyword spelled out as
-    /// its source text — the only place this is needed is a namespace/`use`
-    /// path segment (e.g. `test.class`, `test.instanceof`), where NL's own
-    /// keywords can legally appear as plain path components.
-    fn eat_namespace_segment(&mut self) -> Result<String, SyntaxError> {
+    /// its source text. Used for namespace/`use` path segments (e.g.
+    /// `test.class`, `test.instanceof`) and for a member name right after a
+    /// postfix `.` (e.g. `system.text.Regex.match(...)` — `match` is
+    /// otherwise a keyword, but this position can never be anything but a
+    /// field/method name, so there is no ambiguity).
+    fn eat_ident_or_keyword(&mut self) -> Result<String, SyntaxError> {
         match self.bump().kind {
             TokenKind::Ident(s) => Ok(s),
             TokenKind::Keyword(kw) => Ok(kw.as_str().to_string()),
@@ -93,20 +95,20 @@ impl Parser {
 
     fn parse_source_file(&mut self) -> Result<SourceFile, SyntaxError> {
         self.eat_keyword(Keyword::Namespace)?;
-        let mut namespace = vec![self.eat_namespace_segment()?];
+        let mut namespace = vec![self.eat_ident_or_keyword()?];
         while self.is_punct(Punct::Dot) {
             self.bump();
-            namespace.push(self.eat_namespace_segment()?);
+            namespace.push(self.eat_ident_or_keyword()?);
         }
         self.eat_punct(Punct::Semi)?;
 
         let mut uses = Vec::new();
         while self.is_keyword(Keyword::Use) {
             self.bump();
-            let mut segments = vec![self.eat_namespace_segment()?];
+            let mut segments = vec![self.eat_ident_or_keyword()?];
             while self.is_punct(Punct::Dot) {
                 self.bump();
-                segments.push(self.eat_namespace_segment()?);
+                segments.push(self.eat_ident_or_keyword()?);
             }
             self.eat_punct(Punct::Semi)?;
             uses.push(segments.join("."));
@@ -1048,7 +1050,7 @@ impl Parser {
         loop {
             if self.is_punct(Punct::Dot) {
                 self.bump();
-                let name = self.eat_ident()?;
+                let name = self.eat_ident_or_keyword()?;
                 if self.is_punct(Punct::LParen) {
                     self.bump();
                     let args = self.parse_args()?;

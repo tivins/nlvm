@@ -1,0 +1,52 @@
+---
+title: "Phase 6 — system.text.Regex"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "partial fullno groupsok noneok a b c a|b|c litok wrongok"
+---
+
+#NLFILE phase6/textregex/Main.nl
+namespace phase6.textregex;
+class Main {
+	public static int main(string[] args) {
+		bool partial = system.text.Regex.match("\\d+", "abc123");
+		system.Out.print(partial ? "partial" : "partialbad");
+		system.Out.print(" ");
+
+		bool full = system.text.Regex.match("^\\d+$", "abc123");
+		system.Out.print(full ? "fullbad" : "fullno");
+		system.Out.print(" ");
+
+		auto m = system.text.Regex.matchFirst("(\\d+)-(\\d+)", "id 12-34 end");
+		string groupsOk = "groupsbad";
+		if (m != null) {
+			if (m.fullMatch == "12-34" && m.groups[0] == "12-34" && m.groups[1] == "12" && m.groups[2] == "34") {
+				groupsOk = "groupsok";
+			}
+		}
+		system.Out.print(groupsOk);
+		system.Out.print(" ");
+
+		auto none = system.text.Regex.matchFirst("xyz", "abc123");
+		system.Out.print(none == null ? "noneok" : "nonebad");
+		system.Out.print(" ");
+
+		string replaced = system.text.Regex.replace("\\s+", "a  b   c", " ");
+		system.Out.print(replaced);
+		system.Out.print(" ");
+
+		string[] parts = system.text.Regex.split("\\s*,\\s*", "a, b , c");
+		system.Out.print(parts[0] + "|" + parts[1] + "|" + parts[2]);
+		system.Out.print(" ");
+
+		string safe = system.text.Regex.escape("a.b*c");
+		bool litOk = system.text.Regex.match(safe, "a.b*c");
+		system.Out.print(litOk ? "litok" : "litbad");
+		system.Out.print(" ");
+
+		bool wrongMatch = system.text.Regex.match(safe, "axbxc");
+		system.Out.print(wrongMatch ? "wrongbad" : "wrongok");
+
+		return 0;
+	}
+}
