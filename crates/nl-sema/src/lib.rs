@@ -92,16 +92,17 @@ fn check_duplicate_classes(files: &[SourceFile]) -> Result<(), SemaError> {
 }
 
 /// compiler.md § Import name resolution — E043. A `use` clause conflicts if
-/// its simple (last-segment) name is already bound, under that same file, to
-/// a *different* entity: the class being defined in the file, another type in
+/// its bound name — the `as Alias` name if given, else the simple
+/// (last-segment) name — is already bound, under that same file, to a
+/// *different* entity: the class being defined in the file, another type in
 /// the same namespace (already visible without `use` — see
 /// `class_table::import_map`), or another `use` clause processed earlier in
 /// this file. Re-importing the exact same FQCN that's already implicitly
 /// visible (e.g. `m5_0010`'s `use test.class.ClassTest;` from within
 /// `test.class.Main`) is redundant but not a conflict — only a mismatched
-/// FQCN under an already-bound name is. (This implementation has no `as`
-/// aliasing — see `nl_syntax::parser`'s `use` grammar — so only these
-/// unaliased collisions are detectable.)
+/// FQCN under an already-bound name is. An alias never collides with the
+/// unaliased simple name of its own target (only with *other* bindings), so
+/// `use x.Y as Y;` is just a redundant, harmless spelling.
 fn check_duplicate_imports(file: &SourceFile, all_files: &[SourceFile]) -> Result<(), SemaError> {
     let own_fqcn = class_table::fqcn_of(file);
     let own_simple = match &file.item {
@@ -122,19 +123,24 @@ fn check_duplicate_imports(file: &SourceFile, all_files: &[SourceFile]) -> Resul
     }
     let mut imported: HashMap<&str, &str> = HashMap::new();
     for u in &file.uses {
-        let simple = u.rsplit('.').next().expect("use path is never empty");
-        if simple == own_simple && u != &own_fqcn {
-            return Err(SemaError::DuplicateImportSymbol(simple.to_string()));
+        let bound_name = u
+            .alias
+            .as_deref()
+            .unwrap_or_else(|| u.path.rsplit('.').next().expect("use path is never empty"));
+        if bound_name == own_simple && u.path != own_fqcn {
+            return Err(SemaError::DuplicateImportSymbol(bound_name.to_string()));
         }
-        if let Some(existing_fqcn) = same_namespace.get(simple) {
-            if existing_fqcn != u {
-                return Err(SemaError::DuplicateImportSymbol(simple.to_string()));
+        if let Some(existing_fqcn) = same_namespace.get(bound_name) {
+            if existing_fqcn != &u.path {
+                return Err(SemaError::DuplicateImportSymbol(bound_name.to_string()));
             }
         }
-        match imported.get(simple) {
-            Some(existing) if *existing != u => return Err(SemaError::DuplicateImportSymbol(simple.to_string())),
+        match imported.get(bound_name) {
+            Some(existing) if *existing != u.path => {
+                return Err(SemaError::DuplicateImportSymbol(bound_name.to_string()))
+            }
             _ => {
-                imported.insert(simple, u);
+                imported.insert(bound_name, &u.path);
             }
         }
     }

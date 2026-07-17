@@ -153,9 +153,11 @@ fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String, St
     };
     map.insert(simple, fqcn_of(file));
     for u in &file.uses {
-        if let Some(simple) = u.rsplit('.').next() {
-            map.insert(simple.to_string(), u.clone());
-        }
+        let simple = u
+            .alias
+            .clone()
+            .unwrap_or_else(|| u.path.rsplit('.').next().expect("use path is never empty").to_string());
+        map.insert(simple, u.path.clone());
     }
     map
 }

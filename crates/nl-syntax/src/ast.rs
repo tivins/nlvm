@@ -6,10 +6,20 @@
 #[derive(Debug, Clone, PartialEq)]
 pub struct SourceFile {
     pub namespace: Vec<String>,
-    /// Fully-qualified names brought into scope by `use ns.path.Name;`
-    /// clauses (e.g. `"test.class.ClassTest"`), in source order.
-    pub uses: Vec<String>,
+    /// Fully-qualified names brought into scope by `use ns.path.Name [as
+    /// Alias];` clauses, in source order.
+    pub uses: Vec<UseDecl>,
     pub item: SourceItem,
+}
+
+/// A single `use` clause. `path` is the dotted FQCN (e.g.
+/// `"test.class.ClassTest"`); `alias` is the optional `as Alias` local name
+/// (specs.md § Imports, "Using aliases") — when absent, importers bind the
+/// last segment of `path` as usual.
+#[derive(Debug, Clone, PartialEq)]
+pub struct UseDecl {
+    pub path: String,
+    pub alias: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

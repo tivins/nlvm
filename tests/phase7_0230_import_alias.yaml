@@ -1,0 +1,41 @@
+---
+title: "use ... as ... — import aliasing resolves a same-namespace-name collision"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "10 20"
+---
+
+#NLFILE phase7/alias/a/Widget.nl
+namespace phase7.alias.a;
+class Widget {
+	public construct() {}
+
+	public int value() {
+		return 10;
+	}
+}
+
+#NLFILE phase7/alias/b/Widget.nl
+namespace phase7.alias.b;
+class Widget {
+	public construct() {}
+
+	public int value() {
+		return 20;
+	}
+}
+
+#NLFILE phase7/alias/Main.nl
+namespace phase7.alias;
+use phase7.alias.a.Widget as WidgetA;
+use phase7.alias.b.Widget as WidgetB;
+class Main {
+	public static int main(string[] args) {
+		auto a = new WidgetA();
+		auto b = new WidgetB();
+		system.Out.print(system.Int.toString(a.value()));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString(b.value()));
+		return 0;
+	}
+}

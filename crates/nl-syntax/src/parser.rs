@@ -110,8 +110,14 @@ impl Parser {
                 self.bump();
                 segments.push(self.eat_ident_or_keyword()?);
             }
+            let alias = if self.is_keyword(Keyword::As) {
+                self.bump();
+                Some(self.eat_ident_or_keyword()?)
+            } else {
+                None
+            };
             self.eat_punct(Punct::Semi)?;
-            uses.push(segments.join("."));
+            uses.push(UseDecl { path: segments.join("."), alias });
         }
 
         // specs.md § Readonly, "Modifier order": `[abstract | final] class

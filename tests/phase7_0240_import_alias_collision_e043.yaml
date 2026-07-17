@@ -1,0 +1,28 @@
+---
+title: "Compile E043 — two aliased imports bound to the same name conflict"
+file_separator: "#NLFILE"
+expected_compile_error: "E043"
+---
+
+#NLFILE phase7/e043alias/a/Widget.nl
+namespace phase7.e043alias.a;
+class Widget {
+	public construct() {}
+}
+
+#NLFILE phase7/e043alias/b/Gadget.nl
+namespace phase7.e043alias.b;
+class Gadget {
+	public construct() {}
+}
+
+#NLFILE phase7/e043alias/Main.nl
+namespace phase7.e043alias.main;
+use phase7.e043alias.a.Widget as Thing;
+use phase7.e043alias.b.Gadget as Thing;
+class Main {
+	public static int main(string[] args) {
+		auto w = new Thing();
+		return 0;
+	}
+}
