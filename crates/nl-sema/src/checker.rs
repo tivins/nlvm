@@ -1400,17 +1400,28 @@ impl<'a> MethodChecker<'a> {
     /// no notion of interfaces. A class value is also assignable to any
     /// interface type it directly `implements` (compiler.md's subtyping for
     /// reference types) — checked separately here since it needs
-    /// `self.classes`. No transitivity through interface-`extends` or class
-    /// inheritance (out of scope this phase).
+    /// `self.classes`. Walks union members on both sides (compiler.md §
+    /// Union type compatibility: a value is assignable to a union if it's a
+    /// subtype of *some* constituent, e.g. `Animal|null pet = new Dog()`
+    /// where `Dog implements Animal`). No transitivity through
+    /// interface-`extends` or class inheritance (out of scope this phase).
     fn is_object_assignable(&self, value_ty: &Type, target_ty: &Type) -> bool {
-        let (Type::Named(from), Type::Named(to)) = (value_ty, target_ty) else {
-            return false;
-        };
-        class_table::is_subclass_or_same(self.classes, from, to)
-            || self
-                .classes
-                .get(from)
-                .is_some_and(|info| info.implements.iter().any(|i| i == to))
+        let target_members = types::members(target_ty);
+        types::members(value_ty).iter().all(|vm| {
+            let Type::Named(from) = vm else {
+                return false;
+            };
+            target_members.iter().any(|tm| {
+                let Type::Named(to) = tm else {
+                    return false;
+                };
+                class_table::is_subclass_or_same(self.classes, from, to)
+                    || self
+                        .classes
+                        .get(from)
+                        .is_some_and(|info| info.implements.iter().any(|i| i == to))
+            })
+        })
     }
 
     /// `(T) expr` cast validation — compiler.md § Cast validation / E007.
