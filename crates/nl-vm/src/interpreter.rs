@@ -68,11 +68,23 @@ fn run_frame(
     // never changes across instructions.
     let is_constructor = method.flags & method_flags::CONSTRUCTOR != 0;
 
+    // vm.md § Stack trace construction — this frame is on the shadow call
+    // stack for as long as this function is on the real Rust one; the guard
+    // pops it again on every exit path (`crate::call_stack`).
+    let class_fqcn = module.this_class_name().unwrap_or("").to_string();
+    let method_name = module
+        .constant_pool
+        .utf8_at(method.name_index)
+        .unwrap_or("")
+        .to_string();
+    let _frame_guard = crate::call_stack::push_frame(class_fqcn, method_name);
+
     loop {
         if pc >= code.len() {
             return Ok(None);
         }
         let opcode_pc = pc;
+        crate::call_stack::set_current_line(&method.line_table, opcode_pc);
         match exec_step(
             program,
             module,
