@@ -1,0 +1,20 @@
+---
+title: "Lexer — \\r in a string literal must produce an actual carriage return byte (13), not a literal 'r' (regression: \\r used to drop the backslash and keep the letter, corrupting CRLF-based protocols like raw HTTP headers)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "2 13 10"
+---
+
+#NLFILE phase9/strescape/Main.nl
+namespace phase9.strescape;
+class Main {
+	public static int main(string[] args) {
+		byte[] bytes = system.text.Encoding.encodeUtf8("\r\n");
+		system.Out.print(system.Int.toString(bytes.length()));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString((int) bytes[0]));
+		system.Out.print(" ");
+		system.Out.print(system.Int.toString((int) bytes[1]));
+		return 0;
+	}
+}

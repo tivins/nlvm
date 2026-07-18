@@ -173,9 +173,16 @@ impl<'a> Lexer<'a> {
                 Some(b'\\') => match self.bump() {
                     Some(b'n') => s.push('\n'),
                     Some(b't') => s.push('\t'),
+                    Some(b'r') => s.push('\r'),
                     Some(b'"') => s.push('"'),
                     Some(b'\\') => s.push('\\'),
-                    Some(other) => s.push(other as char),
+                    Some(other) => {
+                        return Err(SyntaxError::Lex(
+                            format!("invalid escape sequence '\\{}'", other as char),
+                            self.line,
+                            self.col,
+                        ))
+                    }
                     None => {
                         return Err(SyntaxError::Lex(
                             "unterminated string".into(),

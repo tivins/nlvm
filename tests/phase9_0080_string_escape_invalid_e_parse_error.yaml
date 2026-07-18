@@ -1,0 +1,14 @@
+---
+title: "Lexer — an unrecognized escape sequence (e.g. \\q) in a string literal must be a lex error, not silently keep the letter without its backslash"
+file_separator: "#NLFILE"
+expected_parse_error: true
+---
+
+#NLFILE phase9/strescapebad/Main.nl
+namespace phase9.strescapebad;
+class Main {
+	public static int main(string[] args) {
+		string s = "bad\qescape";
+		return 0;
+	}
+}
