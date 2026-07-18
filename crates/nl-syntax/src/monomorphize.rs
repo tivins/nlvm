@@ -575,6 +575,10 @@ fn collect_expr(
             collect_expr(then_e, imports, templates, out);
             collect_expr(else_e, imports, templates, out);
         }
+        Expr::Coalesce(lhs, rhs) | Expr::Elvis(lhs, rhs) => {
+            collect_expr(lhs, imports, templates, out);
+            collect_expr(rhs, imports, templates, out);
+        }
         Expr::Closure {
             params,
             return_type,
@@ -971,6 +975,14 @@ fn rewrite_expr(
             Box::new(rewrite_expr(then_e, imports, templates)),
             Box::new(rewrite_expr(else_e, imports, templates)),
         ),
+        Expr::Coalesce(lhs, rhs) => Expr::Coalesce(
+            Box::new(rewrite_expr(lhs, imports, templates)),
+            Box::new(rewrite_expr(rhs, imports, templates)),
+        ),
+        Expr::Elvis(lhs, rhs) => Expr::Elvis(
+            Box::new(rewrite_expr(lhs, imports, templates)),
+            Box::new(rewrite_expr(rhs, imports, templates)),
+        ),
         Expr::Closure {
             params,
             return_type,
@@ -1264,6 +1276,13 @@ fn subst_expr(expr: &Expr, subst: &HashMap<String, Type>) -> Expr {
             Box::new(subst_expr(then_e, subst)),
             Box::new(subst_expr(else_e, subst)),
         ),
+        Expr::Coalesce(lhs, rhs) => Expr::Coalesce(
+            Box::new(subst_expr(lhs, subst)),
+            Box::new(subst_expr(rhs, subst)),
+        ),
+        Expr::Elvis(lhs, rhs) => {
+            Expr::Elvis(Box::new(subst_expr(lhs, subst)), Box::new(subst_expr(rhs, subst)))
+        }
         Expr::Closure {
             params,
             return_type,

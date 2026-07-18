@@ -578,6 +578,8 @@ impl<'a> Emitter<'a> {
             Expr::Binary(op, lhs, rhs) => self.compile_binary(*op, lhs, rhs),
             Expr::Match(subject, arms) => self.compile_match(subject, arms),
             Expr::Ternary(cond, then_e, else_e) => self.compile_ternary(cond, then_e, else_e),
+            Expr::Coalesce(lhs, rhs) => self.compile_coalesce(lhs, rhs),
+            Expr::Elvis(lhs, rhs) => self.compile_elvis(lhs, rhs),
             Expr::Closure {
                 params,
                 return_type,
@@ -798,6 +800,81 @@ impl<'a> Emitter<'a> {
         self.coerce_value(&else_ty, &then_ty, "ternary branch")?;
         self.patch_branch_to(end_pc, end_operand, self.code.len());
         Ok(then_ty)
+    }
+
+    /// `a ?? b` — specs.md § Nullish coalescing operator; vm.md § Nullish
+    /// coalescing and elvis operators (`DUP`+`IS_NONNULL`+`IF_TRUE`, `POP`
+    /// otherwise then evaluate `b`). `IsNonNull` already consumes the `DUP`d
+    /// copy and leaves the original value on the stack for the non-null
+    /// path, exactly matching that pseudocode. Result type is the left
+    /// operand's `ExprTy` (unions already collapse to their non-null
+    /// member's `ExprTy` — see `expr_ty_of`); lenient about the right
+    /// operand's type like `compile_ternary`, via the same `coerce_value`.
+    fn compile_coalesce(&mut self, lhs: &Expr, rhs: &Expr) -> Result<ExprTy, CodegenError> {
+        let lhs_ty = self.compile_expr(lhs)?;
+        self.op(Opcode::Dup, 1);
+        self.op(Opcode::IsNonNull, 0);
+        let (skip_pc, skip_operand) = self.branch(Opcode::IfTrue, -1);
+        self.op(Opcode::Pop, -1);
+        let rhs_ty = self.compile_expr(rhs)?;
+        self.coerce_value(&rhs_ty, &lhs_ty, "?? right operand")?;
+        self.patch_branch(skip_pc, skip_operand);
+        Ok(lhs_ty)
+    }
+
+    /// `a ?: b` — specs.md § Elvis operator; vm.md § Nullish coalescing and
+    /// elvis operators. Same shape as `compile_coalesce`, but the "use `b`"
+    /// branch also triggers on `false`/`0`, not just `null`. vm.md notes the
+    /// compiler may simplify the falsy check based on `a`'s static type —
+    /// done here via `lhs_ty` (only `null` applies to `StringT`/`Object`/
+    /// `Array`/`Closure`, since a value of one of those static types can
+    /// never actually be `false` or a numeric zero at runtime).
+    fn compile_elvis(&mut self, lhs: &Expr, rhs: &Expr) -> Result<ExprTy, CodegenError> {
+        let lhs_ty = self.compile_expr(lhs)?;
+        let mut falsy_branches = Vec::new();
+
+        self.op(Opcode::Dup, 1);
+        self.op(Opcode::IsNull, 0);
+        falsy_branches.push(self.branch(Opcode::IfTrue, -1));
+
+        match lhs_ty {
+            ExprTy::Bool => {
+                self.op(Opcode::Dup, 1);
+                self.op(Opcode::ConstFalse, 1);
+                self.op(Opcode::CmpEq, -1);
+                falsy_branches.push(self.branch(Opcode::IfTrue, -1));
+            }
+            ExprTy::Int => {
+                self.op(Opcode::Dup, 1);
+                self.op(Opcode::ConstIZero, 1);
+                self.op(Opcode::CmpEq, -1);
+                falsy_branches.push(self.branch(Opcode::IfTrue, -1));
+            }
+            ExprTy::Float => {
+                self.op(Opcode::Dup, 1);
+                self.op(Opcode::ConstFZero, 1);
+                self.op(Opcode::CmpEq, -1);
+                falsy_branches.push(self.branch(Opcode::IfTrue, -1));
+            }
+            ExprTy::Byte => {
+                self.op(Opcode::Dup, 1);
+                self.op(Opcode::B2I, 0);
+                self.op(Opcode::ConstIZero, 1);
+                self.op(Opcode::CmpEq, -1);
+                falsy_branches.push(self.branch(Opcode::IfTrue, -1));
+            }
+            _ => {}
+        }
+
+        let (skip_pc, skip_operand) = self.branch(Opcode::Goto, 0);
+        for (pc, operand) in falsy_branches {
+            self.patch_branch(pc, operand);
+        }
+        self.op(Opcode::Pop, -1);
+        let rhs_ty = self.compile_expr(rhs)?;
+        self.coerce_value(&rhs_ty, &lhs_ty, "?: right operand")?;
+        self.patch_branch(skip_pc, skip_operand);
+        Ok(lhs_ty)
     }
 
     /// `match(subject) { pattern: value, ... }` — vm.md § Match expressions:

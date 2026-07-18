@@ -383,9 +383,15 @@ pub enum Expr {
     /// pattern is the `default` arm and must be last.
     Match(Box<Expr>, Vec<MatchArm>),
     /// `cond ? then : else` — specs.md § Ternary operator. Precedence level
-    /// 10 (below `||`, above `??`/`?:` elvis — the latter two are not
-    /// implemented yet).
+    /// 10 (below `||`, above `??`/`?:` elvis).
     Ternary(Box<Expr>, Box<Expr>, Box<Expr>),
+    /// `a ?? b` — specs.md § Nullish coalescing operator. Precedence level
+    /// 11, left-associative, looser than ternary. Only `null` (not `false`
+    /// or `0`) triggers `b`.
+    Coalesce(Box<Expr>, Box<Expr>),
+    /// `a ?: b` — specs.md § Elvis operator. Same precedence as `??`; `b` is
+    /// used when `a` is falsy (`null`, `false`, or `0`).
+    Elvis(Box<Expr>, Box<Expr>),
     /// `(params) => body` — specs.md § Anonymous Functions. `return_type`
     /// is `None` when deduced from the body (only an explicit *primitive*
     /// return type is parseable today — see `nl_syntax::parser`'s

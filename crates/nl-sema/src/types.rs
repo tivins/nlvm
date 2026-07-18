@@ -21,6 +21,27 @@ pub fn is_numeric(ty: &Type) -> bool {
     matches!(ty, Type::Int | Type::Float | Type::Byte)
 }
 
+/// `ty` with the `null` member removed from its union — the "left operand's
+/// type without `null`" half of `??`'s result type (specs.md § Nullish
+/// coalescing operator). A no-op for a non-union type or one without `null`.
+pub fn strip_null(ty: &Type) -> Type {
+    match ty {
+        Type::Union(members) => {
+            let rest: Vec<Type> = members
+                .iter()
+                .filter(|m| !matches!(m, Type::NullT))
+                .cloned()
+                .collect();
+            match rest.len() {
+                0 => Type::NullT,
+                1 => rest.into_iter().next().expect("len checked above"),
+                _ => Type::Union(rest),
+            }
+        }
+        other => other.clone(),
+    }
+}
+
 /// Whether `display`'s rendering of a type names one of the primitives —
 /// used to pick "which side of a failed binary operator is the (non-
 /// primitive) template argument" (`checker::relabel_template_operator_error`,

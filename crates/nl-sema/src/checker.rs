@@ -1827,6 +1827,20 @@ impl<'a> MethodChecker<'a> {
                 self.check_expr(else_e, assigned)?;
                 Ok(then_ty)
             }
+            // specs.md § Nullish coalescing operator / § Elvis operator.
+            // Leniency mirrors `Ternary` above: the result type is
+            // approximated as the left operand's type with `null` stripped
+            // (real coercion of the right operand happens in nl-codegen,
+            // which has `ExprTy` to work with). Not enforcing that the left
+            // operand's type actually includes `null` is deliberate — no
+            // E-code covers this (Phase 7's 49 codes are closed), so this
+            // stays as permissive as `Ternary`/`match` rather than adding a
+            // new one for it.
+            Expr::Coalesce(lhs, rhs) | Expr::Elvis(lhs, rhs) => {
+                let lty = self.check_expr(lhs, assigned)?;
+                self.check_expr(rhs, assigned)?;
+                Ok(types::strip_null(&lty))
+            }
             // vm.md § Closures — checked like a nested block with its own
             // additional param declarations, so definite assignment on a
             // *captured* variable still applies (it must be assigned by the

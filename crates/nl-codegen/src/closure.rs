@@ -156,6 +156,10 @@ fn collect_expr(expr: &Expr, names: &mut HashSet<String>) {
             collect_expr(then_e, names);
             collect_expr(else_e, names);
         }
+        Expr::Coalesce(lhs, rhs) | Expr::Elvis(lhs, rhs) => {
+            collect_expr(lhs, names);
+            collect_expr(rhs, names);
+        }
         Expr::Closure { params, body, .. } => {
             // A nested closure may itself reference a variable from this
             // (outer) closure's enclosing scope — recurse, but drop its own

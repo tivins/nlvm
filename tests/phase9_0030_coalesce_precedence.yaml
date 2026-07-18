@@ -1,0 +1,26 @@
+---
+title: "?? precedence — ternary binds tighter than ??: `a ?? b ? c : d` parses as `a ?? (b ? c : d)`, not `(a ?? b) ? c : d`"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "then T"
+---
+
+#NLFILE phase9/coalesceprecedence/Main.nl
+namespace phase9.coalesceprecedence;
+class Main {
+    public static int main(string[] args) {
+        string|null a = null;
+        string result = a ?? (true ? "then" : "else");
+        system.Out.print(result);
+        system.Out.print(" ");
+
+        // specs.md § Operator precedence worked example: `x ?? true ? "T" : "F"`
+        // must parse as `x ?? (true ? "T" : "F")`. If it instead parsed as
+        // `(x ?? true) ? "T" : "F"`, the ternary's condition would be
+        // `x ?? true` — statically a `string`, not `bool` — a compile error.
+        string|null x = null;
+        string r2 = x ?? true ? "T" : "F";
+        system.Out.print(r2);
+        return 0;
+    }
+}

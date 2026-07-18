@@ -1,0 +1,41 @@
+---
+title: "?: — falsy (null, false, 0) triggers default, truthy passes through (right operand only evaluated when left is falsy)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "SIDE99 5 true true fallback"
+---
+
+#NLFILE phase9/elvisbasic/Helper.nl
+namespace phase9.elvisbasic;
+class Helper {
+    public static int sideEffectInt() {
+        system.Out.print("SIDE");
+        return 99;
+    }
+}
+
+#NLFILE phase9/elvisbasic/Main.nl
+namespace phase9.elvisbasic;
+class Main {
+    public static int main(string[] args) {
+        int a = 0;
+        system.Out.print(system.Int.toString(a ?: Helper.sideEffectInt()));
+        system.Out.print(" ");
+
+        int b = 5;
+        system.Out.print(system.Int.toString(b ?: -1));
+        system.Out.print(" ");
+
+        bool c = false;
+        system.Out.print(system.Bool.toString(c ?: true));
+        system.Out.print(" ");
+
+        bool d = true;
+        system.Out.print(system.Bool.toString(d ?: false));
+        system.Out.print(" ");
+
+        string|null e = null;
+        system.Out.print(e ?: "fallback");
+        return 0;
+    }
+}

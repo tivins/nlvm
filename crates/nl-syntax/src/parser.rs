@@ -1289,7 +1289,7 @@ impl Parser {
     }
 
     fn parse_assignment(&mut self) -> Result<Expr, SyntaxError> {
-        let lhs = self.parse_ternary()?;
+        let lhs = self.parse_coalesce()?;
         let compound = match &self.peek().kind {
             TokenKind::Punct(Punct::Assign) => Some(None),
             TokenKind::Punct(Punct::PlusEq) => Some(Some(BinOp::Add)),
@@ -1321,11 +1321,37 @@ impl Parser {
         Ok(Expr::Assign(target, Box::new(value)))
     }
 
+    /// specs.md § Operator precedence, level 11 — `??` and `?:` (elvis),
+    /// left-associative, looser than ternary (level 10) and tighter than
+    /// assignment. Both share one precedence level and are parsed in the
+    /// same left-to-right loop (e.g. `a ?? b ?: c` parses as
+    /// `(a ?? b) ?: c`). Each operand is itself a full ternary, so
+    /// `a ?? b ? c : d` parses as `a ?? (b ? c : d)` per specs.md's worked
+    /// example (the `b ? c : d` ternary is parsed whole as the `??`
+    /// right-hand operand).
+    fn parse_coalesce(&mut self) -> Result<Expr, SyntaxError> {
+        let mut lhs = self.parse_ternary()?;
+        loop {
+            if self.is_punct(Punct::QuestionQuestion) {
+                self.bump();
+                let rhs = self.parse_ternary()?;
+                lhs = Expr::Coalesce(Box::new(lhs), Box::new(rhs));
+            } else if self.is_punct(Punct::QuestionColon) {
+                self.bump();
+                let rhs = self.parse_ternary()?;
+                lhs = Expr::Elvis(Box::new(lhs), Box::new(rhs));
+            } else {
+                break;
+            }
+        }
+        Ok(lhs)
+    }
+
     /// specs.md § Operator precedence, level 10 — `cond ? then : else`,
-    /// right-associative, binds tighter than `??`/`?:` (not implemented) and
-    /// looser than `||`. The `then` branch accepts a full expression (as in
-    /// C/Java); the `else` branch recurses here so `a ? b : c ? d : e`
-    /// nests to the right.
+    /// right-associative, binds tighter than `??`/`?:` and looser than
+    /// `||`. The `then` branch accepts a full expression (as in C/Java);
+    /// the `else` branch recurses here so `a ? b : c ? d : e` nests to the
+    /// right.
     fn parse_ternary(&mut self) -> Result<Expr, SyntaxError> {
         let cond = self.parse_or()?;
         if !self.is_punct(Punct::Question) {

@@ -1,0 +1,37 @@
+---
+title: "?? — null default, non-null passthrough (with short-circuit: right operand not evaluated when left is non-null)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "default value 7 3"
+---
+
+#NLFILE phase9/coalescebasic/Helper.nl
+namespace phase9.coalescebasic;
+class Helper {
+    public static string sideEffectStr() {
+        system.Out.print("SIDE");
+        return "fallback";
+    }
+}
+
+#NLFILE phase9/coalescebasic/Main.nl
+namespace phase9.coalescebasic;
+class Main {
+    public static int main(string[] args) {
+        string|null a = null;
+        system.Out.print(a ?? "default");
+        system.Out.print(" ");
+
+        string|null b = "value";
+        system.Out.print(b ?? Helper.sideEffectStr());
+        system.Out.print(" ");
+
+        int|null c = null;
+        system.Out.print(system.Int.toString(c ?? 7));
+        system.Out.print(" ");
+
+        int|null d = 3;
+        system.Out.print(system.Int.toString(d ?? 99));
+        return 0;
+    }
+}
