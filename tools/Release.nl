@@ -13,7 +13,8 @@ class Release {
         string version = changelogVersion + "+" + specsVersion;
         system.Out.println("Latest version: " + version);
 
-        auto tagResult = system.ps.Process.run(new string[]{"git", "tag", "-a", version, "-m", "Release " + version});
+        string tagMessage = "Release " + changelogVersion + "\n" + "Specs " + specsVersion;
+        auto tagResult = system.ps.Process.run(new string[]{"git", "tag", "-a", version, "-m", tagMessage});
         if (tagResult.exitCode != 0) {
             system.Err.print(tagResult.stderr);
             return tagResult.exitCode;
