@@ -27,6 +27,10 @@
 
 <section class="hero">
   <div class="container">
+    <div class="hero-brand">
+      <span class="hero-glyph">nl</span>
+      <span class="hero-eyebrow">The NL programming language</span>
+    </div>
     <h1>A small language that takes<br><span class="accent">correctness</span> seriously.</h1>
     <p class="tagline">NL is a statically typed, class-based language with native null safety, checked exceptions and exhaustive matching — compiled to compact bytecode and run by <strong>nlvm</strong>, a lightweight virtual machine written in Rust.</p>
     <div class="cta-row">
@@ -114,7 +118,7 @@ Hello, world!</code></pre>
         <h3><span class="dot">◆</span>Specified and tested</h3>
         <p>The language is defined by a versioned, public specification — <a href="https://github.com/tivins/nlvm-specs">nlvm-specs</a> — and the implementation tracks it release by release, backed by a YAML conformance suite run in CI.</p>
         <pre class="sh"><code>$ nlvm --version
-nlvm 0.5.3 (nlvm-specs 0.8.44)
+nlvm 0.5.4 (nlvm-specs 0.8.44)
 $ nltest tests/
 140 passed, 0 failed, 140 total</code></pre>
       </div>
