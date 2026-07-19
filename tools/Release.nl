@@ -8,7 +8,9 @@ class Release {
             system.Err.println("No version header found in CHANGELOG.md (expected \"## [x.y.z]\").");
             return 1;
         }
-        string version = header.groups[1];
+        string changelogVersion = header.groups[1];
+        string specsVersion = system.io.File.readAllText("SPECS_VERSION").trim();
+        string version = changelogVersion + "+" + specsVersion;
         system.Out.println("Latest version: " + version);
 
         auto tagResult = system.ps.Process.run(new string[]{"git", "tag", "-a", version, "-m", "Release " + version});

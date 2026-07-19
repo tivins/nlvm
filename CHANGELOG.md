@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0]
+
+Track the `nlvm-specs` baseline explicitly.
+
+### Added
+- `SPECS_VERSION`: single source of truth for the `nlvm-specs` release this implementation targets, bumped whenever new specs are implemented.
+- `nlc --version`, reporting the crate version and the tracked `nlvm-specs` version (`nlc` had no version flag before).
+
+### Changed
+- `nlvm --version` now also reports the tracked `nlvm-specs` version alongside the crate version.
+- `tools/Release.nl` now tags releases as `<version>+<specs version>` (e.g. `0.5.0+0.8.44`) instead of the changelog version alone.
+
 ## [0.4.0]
 
 Single-file program output: `.nlp` container format.

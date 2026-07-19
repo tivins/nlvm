@@ -2,6 +2,10 @@ use std::path::Path;
 
 use anyhow::{bail, Context, Result};
 
+/// The `nlvm-specs` release this implementation currently targets — bump
+/// `SPECS_VERSION` (repo root) whenever new specs are implemented.
+const SPECS_VERSION: &str = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../../SPECS_VERSION"));
+
 /// Recursively collects `.nlm` and `.nlp` files under `dir`, sorted for a
 /// deterministic load order regardless of the OS's directory-listing order.
 fn collect_nlm_modules(dir: &Path, out: &mut Vec<String>) -> Result<()> {
@@ -40,7 +44,11 @@ fn main() -> Result<()> {
     while i < args.len() {
         match args[i].as_str() {
             "--version" => {
-                println!("nlvm {}", env!("CARGO_PKG_VERSION"));
+                println!(
+                    "nlvm {} (nlvm-specs {})",
+                    env!("CARGO_PKG_VERSION"),
+                    SPECS_VERSION.trim()
+                );
                 return Ok(());
             }
             "-h" | "--help" => {
