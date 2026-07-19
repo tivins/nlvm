@@ -201,7 +201,7 @@ a:hover { color: var(--primary-bright); }
   font-family: var(--mono);
   font-size: 13.5px;
   line-height: 1.75;
-  min-height: 180px;
+  min-height: 210px;
   white-space: pre-wrap;
   word-break: break-word;
 }
@@ -209,6 +209,11 @@ a:hover { color: var(--primary-bright); }
 .terminal-body .prompt { color: var(--primary); }
 .terminal-body .out { color: var(--text-muted); }
 .terminal-body .ok { color: var(--primary-bright); }
+.terminal-body .err { color: #d9917f; }
+.terminal-body .com { color: var(--text-faint); font-style: italic; }
+
+.terminal-body { transition: opacity 0.35s ease; }
+.terminal-body.fade-out { opacity: 0; }
 
 .cursor {
   display: inline-block;

@@ -116,27 +116,64 @@
   var term = document.getElementById("terminal-demo");
   if (!term) return;
 
-  // A step is either a typed command or printed output lines.
-  var SCRIPT = [
-    { type: "cmd", text: "nlc --version" },
-    { type: "out", lines: [{ cls: "out", text: "nlc 0.5.1 (nlvm-specs 0.8.44)" }] },
-    { type: "cmd", text: "nlc Main.nl -o Main.nlp" },
-    { type: "cmd", text: "nlvm Main.nlp" },
-    { type: "out", lines: [{ cls: "ok", text: "Hello, world!" }] }
+  // Looping scenarios. A step is a typed comment ("note"), a typed command
+  // ("cmd"), or printed output lines ("out": [cssClass, text] pairs).
+  // Every command and its output was captured from the real toolchain.
+  var SCENARIOS = [
+    {
+      steps: [
+        { note: "# a whole source tree, one shippable file" },
+        { cmd: "nlc src/ -o software.nlp" },
+        { cmd: "nlvm software.nlp" },
+        { out: [["ok", "Hello, world!"]] }
+      ]
+    },
+    {
+      steps: [
+        { note: "# null bugs don't compile" },
+        { cmd: "nlc Bad.nl -o bad.nlp" },
+        { out: [["err", "Error: Bad.nl:4: E003 — Cannot assign 'null' to type 'string' (type does not include null)"]] },
+        { note: "# neither do missed cases" },
+        { cmd: "nlc match/ -o app.nlp" },
+        { out: [["err", "Error: match/Match.nl:6: E047 — Match expression is not exhaustive (missing 'default')"]] }
+      ]
+    },
+    {
+      steps: [
+        { note: "# every exception knows where it came from" },
+        { cmd: "nlvm crash.nlp" },
+        { out: [
+          ["err", "Unhandled exception: ArithmeticException: division by zero"],
+          ["out", "    at app/Main.nl:4"],
+          ["out", "    at app/Main.nl:7"]
+        ] }
+      ]
+    },
+    {
+      steps: [
+        { note: "# one toolchain, one versioned spec" },
+        { cmd: "nlc --version" },
+        { out: [["out", "nlc 0.5.1 (nlvm-specs 0.8.44)"]] },
+        { cmd: "nltest tests/" },
+        { out: [["ok", "140 passed, 0 failed, 140 total"]] }
+      ]
+    }
   ];
 
   var reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
   var cursor = document.createElement("span");
   cursor.className = "cursor";
 
-  function renderAllInstant() {
+  function renderScenarioInstant(scenario) {
     var html = "";
-    SCRIPT.forEach(function (step) {
-      if (step.type === "cmd") {
-        html += '<span class="prompt">$</span> ' + escapeHtml(step.text) + "\n";
+    scenario.steps.forEach(function (step) {
+      if (step.note) {
+        html += '<span class="com">' + escapeHtml(step.note) + "</span>\n";
+      } else if (step.cmd) {
+        html += '<span class="prompt">$</span> ' + escapeHtml(step.cmd) + "\n";
       } else {
-        step.lines.forEach(function (l) {
-          html += '<span class="' + l.cls + '">' + escapeHtml(l.text) + "</span>\n";
+        step.out.forEach(function (l) {
+          html += '<span class="' + l[0] + '">' + escapeHtml(l[1]) + "</span>\n";
         });
       }
     });
@@ -144,7 +181,7 @@
   }
 
   if (reduced) {
-    renderAllInstant();
+    renderScenarioInstant(SCENARIOS[0]);
     return;
   }
 
@@ -154,37 +191,62 @@
     started = true;
     term.innerHTML = "";
     term.appendChild(cursor);
-    runStep(0);
+    runStep(0, 0);
   }
 
-  function runStep(i) {
-    if (i >= SCRIPT.length) return;
-    var step = SCRIPT[i];
-    if (step.type === "cmd") {
+  function appendLine(cls, text) {
+    var span = document.createElement("span");
+    span.className = cls;
+    span.textContent = text;
+    term.insertBefore(span, cursor);
+    term.insertBefore(document.createTextNode("\n"), cursor);
+  }
+
+  function runStep(s, i) {
+    var steps = SCENARIOS[s].steps;
+    if (i >= steps.length) {
+      // Scenario done: hold, fade, then start the next one.
+      setTimeout(function () {
+        term.classList.add("fade-out");
+        setTimeout(function () {
+          term.innerHTML = "";
+          term.appendChild(cursor);
+          term.classList.remove("fade-out");
+          runStep((s + 1) % SCENARIOS.length, 0);
+        }, 350);
+      }, 3200);
+      return;
+    }
+    var step = steps[i];
+    if (step.note) {
+      var note = document.createElement("span");
+      note.className = "com";
+      term.insertBefore(note, cursor);
+      typeInto(note, step.note, 0, function () {
+        term.insertBefore(document.createTextNode("\n"), cursor);
+        setTimeout(function () { runStep(s, i + 1); }, 200);
+      });
+    } else if (step.cmd) {
       var prompt = document.createElement("span");
       prompt.className = "prompt";
       prompt.textContent = "$ ";
       term.insertBefore(prompt, cursor);
-      typeText(step.text, 0, function () {
+      var cmd = document.createElement("span");
+      term.insertBefore(cmd, cursor);
+      typeInto(cmd, step.cmd, 0, function () {
         term.insertBefore(document.createTextNode("\n"), cursor);
-        setTimeout(function () { runStep(i + 1); }, 250);
+        setTimeout(function () { runStep(s, i + 1); }, 250);
       });
     } else {
-      step.lines.forEach(function (l) {
-        var span = document.createElement("span");
-        span.className = l.cls;
-        span.textContent = l.text;
-        term.insertBefore(span, cursor);
-        term.insertBefore(document.createTextNode("\n"), cursor);
-      });
-      setTimeout(function () { runStep(i + 1); }, 500);
+      step.out.forEach(function (l) { appendLine(l[0], l[1]); });
+      setTimeout(function () { runStep(s, i + 1); }, 500);
     }
   }
 
-  function typeText(text, pos, done) {
+  function typeInto(el, text, pos, done) {
     if (pos >= text.length) { done(); return; }
-    term.insertBefore(document.createTextNode(text[pos]), cursor);
-    setTimeout(function () { typeText(text, pos + 1, done); }, 28 + Math.random() * 40);
+    el.textContent += text[pos];
+    setTimeout(function () { typeInto(el, text, pos + 1, done); }, 24 + Math.random() * 36);
   }
 
   if ("IntersectionObserver" in window) {
