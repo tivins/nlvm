@@ -757,6 +757,33 @@ impl Parser {
                 self.bump();
                 Type::NullT
             }
+            // `(Type, Type, ...) => ReturnType [throws Name, ...]` —
+            // specs.md § Function type assignment. Unambiguous here: `(`
+            // never starts any other type-atom form, so no lookahead is
+            // needed inside a type position (contrast with statement
+            // position, where `looks_like_function_type_start` disambiguates
+            // this from a parenthesized/closure expression).
+            TokenKind::Punct(Punct::LParen) => {
+                self.bump();
+                let mut params = Vec::new();
+                while !self.is_punct(Punct::RParen) {
+                    params.push(self.parse_type()?);
+                    if self.is_punct(Punct::Comma) {
+                        self.bump();
+                    } else {
+                        break;
+                    }
+                }
+                self.eat_punct(Punct::RParen)?;
+                self.eat_punct(Punct::FatArrow)?;
+                let return_type = Box::new(self.parse_type()?);
+                let throws = self.parse_throws_clause()?;
+                Type::Function {
+                    params,
+                    return_type,
+                    throws,
+                }
+            }
             TokenKind::Ident(name) => match name.as_str() {
                 "int" => {
                     self.bump();
@@ -980,9 +1007,17 @@ impl Parser {
     /// ...) — a non-empty `[` after an identifier is indexing, not an array
     /// type, and no other statement form starts with two consecutive
     /// identifiers.
-    fn looks_like_var_decl(&self) -> bool {
+    ///
+    /// A leading `(` is the one additional case that needs real lookahead
+    /// (`looks_like_function_type_start`) rather than a token peek: it's
+    /// ambiguous with a parenthesized expression statement or a niladic
+    /// closure expression statement — see that function's doc comment.
+    fn looks_like_var_decl(&mut self) -> bool {
         if self.is_keyword(Keyword::Auto) {
             return true;
+        }
+        if self.is_punct(Punct::LParen) {
+            return self.looks_like_function_type_start();
         }
         if matches!(&self.peek().kind, TokenKind::Ident(_)) {
             // Skip a dotted qualified-name prefix (`system.io.FileHandle h`)
@@ -1015,6 +1050,28 @@ impl Parser {
             );
         }
         false
+    }
+
+    /// Tentatively parses a function type (`(Type, ...) => ReturnType
+    /// [throws ...]`) at the current position and checks it's immediately
+    /// followed by an identifier — the variable name of `(int) => int f =
+    /// ...;`. Always restores `self.pos`, so this is pure lookahead despite
+    /// reusing the real recursive-descent `parse_type_atom`.
+    ///
+    /// This is the only shape that distinguishes a function-type var decl
+    /// from the two other things a statement-position `(` can start:
+    /// a parenthesized expression statement (`(a + b).toString();`) and a
+    /// niladic closure expression statement (`() => { ... };`). Both of
+    /// those fail this tentative parse before ever reaching an identifier —
+    /// a closure's parameter list pairs each type with a *name*
+    /// (`(int a) => ...`), which a bare type list can never parse past the
+    /// first parameter, and a closure's body starts with `{` or an
+    /// expression, never an identifier standing alone.
+    fn looks_like_function_type_start(&mut self) -> bool {
+        let save = self.pos;
+        let result = self.parse_type_atom().is_ok() && matches!(self.peek().kind, TokenKind::Ident(_));
+        self.pos = save;
+        result
     }
 
     /// `Name<...> ident` — e.g. `Box<int> a`. Without this lookahead,

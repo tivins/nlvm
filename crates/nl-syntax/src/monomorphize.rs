@@ -290,6 +290,15 @@ fn mangle_type(ty: &Type) -> String {
             "{name}<{}>",
             args.iter().map(mangle_type).collect::<Vec<_>>().join(", ")
         ),
+        Type::Function {
+            params,
+            return_type,
+            ..
+        } => format!(
+            "({}) => {}",
+            params.iter().map(mangle_type).collect::<Vec<_>>().join(", "),
+            mangle_type(return_type)
+        ),
     }
 }
 
@@ -312,6 +321,18 @@ fn resolve_type_names(ty: &Type, imports: &HashMap<String, String>) -> Type {
                 .map(|a| resolve_type_names(a, imports))
                 .collect(),
         ),
+        Type::Function {
+            params,
+            return_type,
+            throws,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|p| resolve_type_names(p, imports))
+                .collect(),
+            return_type: Box::new(resolve_type_names(return_type, imports)),
+            throws: throws.clone(),
+        },
         other => other.clone(),
     }
 }
@@ -378,6 +399,16 @@ fn collect_type(
             for m in members {
                 collect_type(m, imports, templates, out);
             }
+        }
+        Type::Function {
+            params,
+            return_type,
+            ..
+        } => {
+            for p in params {
+                collect_type(p, imports, templates, out);
+            }
+            collect_type(return_type, imports, templates, out);
         }
         _ => {}
     }
@@ -733,6 +764,18 @@ fn rewrite_type(
                 .map(|m| rewrite_type(m, imports, templates))
                 .collect(),
         ),
+        Type::Function {
+            params,
+            return_type,
+            throws,
+        } => Type::Function {
+            params: params
+                .iter()
+                .map(|p| rewrite_type(p, imports, templates))
+                .collect(),
+            return_type: Box::new(rewrite_type(return_type, imports, templates)),
+            throws: throws.clone(),
+        },
         other => other.clone(),
     }
 }
@@ -1108,6 +1151,15 @@ fn subst_type(ty: &Type, subst: &HashMap<String, Type>) -> Type {
             name.clone(),
             args.iter().map(|a| subst_type(a, subst)).collect(),
         ),
+        Type::Function {
+            params,
+            return_type,
+            throws,
+        } => Type::Function {
+            params: params.iter().map(|p| subst_type(p, subst)).collect(),
+            return_type: Box::new(subst_type(return_type, subst)),
+            throws: throws.clone(),
+        },
         other => other.clone(),
     }
 }

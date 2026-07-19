@@ -1,0 +1,47 @@
+---
+title: "Phase 9 — function type as parameter and as return value (specs.md § Function type assignment)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "2,4,6 50"
+---
+
+#NLFILE phase9/function_type_param_and_return/Main.nl
+namespace phase9.function_type_param_and_return;
+class Main {
+	public static int main(string[] args) {
+		int[] numbers = new int[3];
+		numbers[0] = 1;
+		numbers[1] = 2;
+		numbers[2] = 3;
+		processNumbers(numbers, (int x) => x * 2);
+		printInts(numbers);
+		system.Out.print(" ");
+
+		(int) => int multiplyBy5 = createMultiplier(5);
+		system.Out.print(system.Int.toString(multiplyBy5(10)));
+		return 0;
+	}
+
+	private static void processNumbers(int[] numbers, (int) => int transformer) {
+		int i = 0;
+		while (i < numbers.length()) {
+			numbers[i] = transformer(numbers[i]);
+			i++;
+		}
+	}
+
+	private static (int) => int createMultiplier(int factor) {
+		return (int x) => x * factor;
+	}
+
+	private static void printInts(int[] values) {
+		int i = 0;
+		while (i < values.length()) {
+			system.Out.print(system.Int.toString(values[i]));
+			if (i < values.length() - 1) {
+				system.Out.print(",");
+			}
+			i++;
+		}
+	}
+}

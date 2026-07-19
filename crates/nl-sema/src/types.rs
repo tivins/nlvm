@@ -79,6 +79,26 @@ fn atom_eq(a: &Type, b: &Type) -> bool {
     match (a, b) {
         (Type::Array(ea), Type::Array(eb)) => atom_eq(ea, eb),
         (Type::Named(na), Type::Named(nb)) => na == nb,
+        // Structural: same arity, each param and the return type match —
+        // `throws` is ignored, same leniency already established for
+        // `Expr::Closure`'s own `throws` field (checked-exception
+        // verification isn't extended into closures/function types).
+        (
+            Type::Function {
+                params: pa,
+                return_type: ra,
+                ..
+            },
+            Type::Function {
+                params: pb,
+                return_type: rb,
+                ..
+            },
+        ) => {
+            pa.len() == pb.len()
+                && pa.iter().zip(pb).all(|(x, y)| atom_eq(x, y))
+                && atom_eq(ra, rb)
+        }
         _ => a == b,
     }
 }
@@ -129,6 +149,15 @@ pub fn display(ty: &Type) -> String {
         Type::Generic(name, args) => format!(
             "{name}<{}>",
             args.iter().map(display).collect::<Vec<_>>().join(", ")
+        ),
+        Type::Function {
+            params,
+            return_type,
+            ..
+        } => format!(
+            "({}) => {}",
+            params.iter().map(display).collect::<Vec<_>>().join(", "),
+            display(return_type)
         ),
     }
 }

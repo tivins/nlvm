@@ -21,12 +21,31 @@ pub enum ExprTy {
     /// Array element type.
     Array(Box<ExprTy>),
     /// A closure value — vm.md § Closures and anonymous functions. `fqcn`
-    /// is the synthetic closure class generated for this specific literal
-    /// (see `crate::closure`); a closure's *static* type is therefore
-    /// really "the type of this one literal", not a structural function
-    /// type shared across literals with the same shape — there is no
-    /// `typedef`'d function-type syntax to unify them against yet (out of
-    /// scope this phase, see PLAN.md).
+    /// is either the synthetic closure class generated for one specific
+    /// literal (see `crate::closure`), when this `ExprTy` comes straight
+    /// from compiling a closure expression, or `FUNCTION_TYPE_FQCN` — a
+    /// placeholder — when it comes from `expr_ty_of` resolving an explicit
+    /// `Type::Function` (specs.md § Function type assignment: a local,
+    /// field, parameter, or return type written as `(int) => bool`, as
+    /// opposed to a closure literal's own inferred type). The placeholder
+    /// is safe: `Opcode::InvokeClosure` dispatches purely on the receiver's
+    /// *runtime* class plus the method name/descriptor (see
+    /// `nl_vm::interpreter`'s handler — the constant-pool method_ref's
+    /// static class is decoded and discarded), so any string here compiles
+    /// to a working call as long as `params`/`return_ty` match the actual
+    /// value's `invoke` descriptor — enforced structurally (ignoring
+    /// `fqcn`) by `Emitter::coerce_value`'s dedicated `Closure`/`Closure`
+    /// branch. What this does *not* give us is target typing (specs.md's
+    /// return-type-deduction rule 5): a closure literal directly assigned
+    /// to an explicitly *wider* function type (e.g. `(int) => float k =
+    /// (int n) => n;`) still compiles its own `invoke` descriptor from its
+    /// own deduced type, so `coerce_value` rejects the mismatch instead of
+    /// inserting the widening — there's no adapter/thunk mechanism to make
+    /// that safe without also fixing the pre-existing gap that closure
+    /// bodies never coerce their `return` values to a declared/expected
+    /// type (see `compile_closure`). Assumed limitation, not attempted this
+    /// phase: every spec example other than that one numeric-widening case
+    /// already has matching descriptors on both sides.
     Closure {
         params: Vec<ExprTy>,
         return_ty: Box<ExprTy>,
@@ -34,13 +53,21 @@ pub enum ExprTy {
     },
 }
 
+/// Placeholder `fqcn` for an `ExprTy::Closure` built from an explicit
+/// `Type::Function` rather than a specific closure literal — see that
+/// variant's doc comment.
+pub const FUNCTION_TYPE_FQCN: &str = "$FunctionType";
+
 /// Inverse of `expr_ty_of`, needed to build field/method descriptors for
 /// synthesized closure classes, which only ever deal in `ExprTy` (computed
 /// from already-compiled expressions) rather than the source `Type`s
-/// `nl-sema`/the rest of `nl-codegen` resolve ahead of time. Closures
-/// themselves have no `Type` representation (see `ExprTy::Closure`'s doc
-/// comment) — reachable only if a closure captures another closure, which
-/// isn't exercised; falls back to `Type::Void` rather than panicking.
+/// `nl-sema`/the rest of `nl-codegen` resolve ahead of time. A genuine
+/// closure *literal*'s `ExprTy` has no `Type` representation (see
+/// `ExprTy::Closure`'s doc comment) and falls back to `Type::Void` rather
+/// than panicking — reachable only if a closure captures another closure,
+/// which isn't exercised. One built from an explicit `Type::Function` (the
+/// placeholder-`fqcn` case, same doc comment) round-trips exactly, since
+/// there's a real source `Type` behind it.
 fn expr_ty_to_type(ty: &ExprTy) -> Type {
     match ty {
         ExprTy::Int => Type::Int,
@@ -52,7 +79,46 @@ fn expr_ty_to_type(ty: &ExprTy) -> Type {
         ExprTy::Void => Type::Void,
         ExprTy::Object(fqcn) => Type::Named(fqcn.clone()),
         ExprTy::Array(inner) => Type::Array(Box::new(expr_ty_to_type(inner))),
+        ExprTy::Closure {
+            params,
+            return_ty,
+            fqcn,
+        } if fqcn == FUNCTION_TYPE_FQCN => Type::Function {
+            params: params.iter().map(expr_ty_to_type).collect(),
+            return_type: Box::new(expr_ty_to_type(return_ty)),
+            throws: Vec::new(),
+        },
         ExprTy::Closure { .. } => Type::Void,
+    }
+}
+
+/// Whether two `ExprTy::Closure` values have the same function-type shape —
+/// same arity, each param and the return type structurally equal — ignoring
+/// `fqcn` (see `ExprTy::Closure`'s doc comment: a placeholder `fqcn` never
+/// carries meaning, and even between two real closure literals,
+/// `InvokeClosure` dispatch never looks at it). Mirrors
+/// `nl_sema::types::atom_eq`'s `Type::Function` case, one layer down (over
+/// `ExprTy` instead of `Type`, post-resolution).
+fn closure_shape_eq(a: &ExprTy, b: &ExprTy) -> bool {
+    match (a, b) {
+        (
+            ExprTy::Closure {
+                params: pa,
+                return_ty: ra,
+                ..
+            },
+            ExprTy::Closure {
+                params: pb,
+                return_ty: rb,
+                ..
+            },
+        ) => {
+            pa.len() == pb.len()
+                && pa.iter().zip(pb).all(|(x, y)| closure_shape_eq(x, y))
+                && closure_shape_eq(ra, rb)
+        }
+        (ExprTy::Array(ea), ExprTy::Array(eb)) => closure_shape_eq(ea, eb),
+        _ => a == b,
     }
 }
 
@@ -119,6 +185,16 @@ pub fn expr_ty_of(ty: &Type) -> ExprTy {
             "unresolved generic type '{name}<...>' ({} args) reached codegen",
             args.len()
         ),
+        // See `ExprTy::Closure`'s doc comment for the placeholder `fqcn`.
+        Type::Function {
+            params,
+            return_type,
+            ..
+        } => ExprTy::Closure {
+            params: params.iter().map(expr_ty_of).collect(),
+            return_ty: Box::new(expr_ty_of(return_type)),
+            fqcn: FUNCTION_TYPE_FQCN.to_string(),
+        },
     }
 }
 
@@ -767,8 +843,23 @@ impl<'a> Emitter<'a> {
             };
             inner.pop_scope();
 
+            // The `invoke` method's *descriptor* must be built through the
+            // same `ExprTy` round-trip every call site uses to build its
+            // own expected descriptor (`compile_closure_invoke`,
+            // `coerce_value`'s closure-shape branch, `expr_ty_of` on an
+            // explicit `Type::Function`) — not straight from
+            // `resolved_params`. The two disagree exactly when a param's
+            // declared type is a union (e.g. `string|null`): `ExprTy` always
+            // collapses it to its non-null member (vm.md, values are
+            // dynamically tagged at runtime — nullability isn't part of the
+            // physical descriptor), but `resolved_params` still carries the
+            // full `Type::Union`, which `type_descriptor` renders as
+            // `"string|null"`. Using that directly here would give this
+            // literal's own `invoke` a descriptor no caller ever builds,
+            // failing `Module::find_method_by_descriptor` at dispatch time.
+            let descriptor_params: Vec<Type> = param_expr_tys.iter().map(expr_ty_to_type).collect();
             let descriptor =
-                method_descriptor(&resolved_params, &expr_ty_to_type(&deduced_return_ty));
+                method_descriptor(&descriptor_params, &expr_ty_to_type(&deduced_return_ty));
             let name_index = inner.cp.add_utf8("invoke".to_string());
             let descriptor_index = inner.cp.add_type_desc(&descriptor);
             invoke_method = nl_bytecode::MethodDescriptor {
@@ -1794,9 +1885,12 @@ impl<'a> Emitter<'a> {
     /// `Map.forEach`, a separate call site — see that function's doc
     /// comment).
     ///
-    /// `map`'s result element type `U` has no static representation (no
-    /// `Type::Function` this phase — see `ExprTy::Closure`'s doc comment),
-    /// so unlike `filter`/`find` (which keep the receiver's own element
+    /// `map`'s result element type `U` has no static representation from
+    /// nl-sema (a closure literal's own inferred type is still `Type::Void`
+    /// there — see `checker.rs`'s `Expr::Closure` arm; `Type::Function`
+    /// only models *explicit* function-type declarations, not a literal's
+    /// own deduced shape — see `ExprTy::Closure`'s doc comment), so unlike
+    /// `filter`/`find` (which keep the receiver's own element
     /// type, since their callback can't change it) it is recovered directly
     /// from the closure literal's own *deduced* return type
     /// (`ExprTy::Closure`'s `return_ty`) rather than guessed — more precise
@@ -2081,13 +2175,22 @@ impl<'a> Emitter<'a> {
             // a `Value::Object` doesn't carry its static type at runtime, so
             // there's nothing for codegen to enforce here either way.
         } else if matches!(actual, ExprTy::Closure { .. }) && *expected == ExprTy::Void {
-            // A closure literal's own static type is just "this one
-            // literal" (see `ExprTy::Closure`'s doc comment) — there's no
-            // function-type syntax yet to check a callback parameter's
-            // shape against, so any closure is accepted wherever a
-            // callback param is declared (`Type::Void` used as the same
-            // joker nl-sema uses for a closure's own inferred type). First
+            // A closure literal assigned where only an untyped callback
+            // param exists (`Type::Void` used as the same joker nl-sema
+            // uses for a closure's own inferred type — no explicit
+            // `Type::Function` written at that declaration). First
             // exercised by `system.thread.Thread(() => void task)`.
+        } else if matches!((actual, expected), (ExprTy::Closure { .. }, ExprTy::Closure { .. }))
+            && closure_shape_eq(actual, expected)
+        {
+            // Assigning to an explicit `Type::Function` (specs.md §
+            // Function type assignment) — see `ExprTy::Closure`'s doc
+            // comment. Structural match on params/return type, `fqcn`
+            // ignored: no bytecode needed, `actual`'s already-compiled
+            // `invoke` descriptor is exactly what any `InvokeClosure` built
+            // from `expected`'s placeholder `fqcn` will look for at
+            // dispatch time (which resolves purely by the receiver's
+            // runtime class + name/descriptor, never `expected`'s `fqcn`).
         } else if actual != expected {
             return Err(CodegenError::Unsupported(format!(
                 "cannot assign {actual:?} to '{what}' of type {expected:?}"

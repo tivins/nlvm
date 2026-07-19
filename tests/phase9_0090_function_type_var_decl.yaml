@@ -1,0 +1,21 @@
+---
+title: "Phase 9 — explicit function type variable declaration (specs.md § Function type assignment)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "8 hi-there-3"
+---
+
+#NLFILE phase9/function_type_var_decl/Main.nl
+namespace phase9.function_type_var_decl;
+class Main {
+	public static int main(string[] args) {
+		(int, int) => int addFunction = (int a, int b) => a + b;
+		system.Out.print(system.Int.toString(addFunction(3, 5)));
+		system.Out.print(" ");
+
+		(string) => int lengthFunction = (string s) => s.length();
+		system.Out.print("hi-there-");
+		system.Out.print(system.Int.toString(lengthFunction("abc")));
+		return 0;
+	}
+}

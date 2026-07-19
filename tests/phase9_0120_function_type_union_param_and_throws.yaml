@@ -1,0 +1,21 @@
+---
+title: "Phase 9 — function type with a union param and a throws clause (specs.md § Function type assignment); also regression-tests closures with a union-typed parameter called via a bare identifier, previously broken for any closure regardless of an explicit function type (descriptor built from the raw declared Type instead of the same collapsed-union ExprTy every call site uses)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "3"
+---
+
+#NLFILE phase9/function_type_union_param_and_throws/Main.nl
+namespace phase9.function_type_union_param_and_throws;
+class Main {
+	public static int main(string[] args) throws Exception {
+		(string|null) => int throws Exception lengthFunction = (string|null s) => throws Exception {
+			if (s == null) {
+				throw new Exception("String is null");
+			}
+			return s.length();
+		};
+		system.Out.print(system.Int.toString(lengthFunction("abc")));
+		return 0;
+	}
+}

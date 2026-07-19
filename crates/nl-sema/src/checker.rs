@@ -1796,10 +1796,12 @@ impl<'a> MethodChecker<'a> {
                     // dedicated opcode (`ARRAY_LENGTH`) rather than a native
                     // dispatch, but is still checked here like the rest.
                     // `map`/`filter`/`forEach`/`sort`/`find` take a closure
-                    // argument, which always checks as `Type::Void` (no
-                    // `Type::Function` this phase — see `Expr::Closure`
-                    // above), so nothing more to validate about `arg_types`
-                    // for those; `map`'s actual element type `U` isn't
+                    // argument, which always checks as `Type::Void` (a
+                    // closure literal's own inferred type is still never
+                    // deduced as a real `Type::Function` here — see
+                    // `Expr::Closure` above), so nothing more to validate
+                    // about `arg_types` for those; `map`'s actual element
+                    // type `U` isn't
                     // statically known either, hence the `Type::Void`
                     // wildcard return (same joker `check_assignable` already
                     // gives every other not-yet-modeled expression form) —
@@ -2032,8 +2034,11 @@ impl<'a> MethodChecker<'a> {
             // *captured* variable still applies (it must be assigned by the
             // time the closure literal is created — capture is by value,
             // see nl-codegen's `ExprTy::Closure`). No dedicated static type
-            // to report (no `Type::Function` this phase — see PLAN.md's
-            // closures gap), so `Type::Void`, same leniency `check_assignable`
+            // to report: `Type::Function` exists (specs.md § Function type
+            // assignment, for *explicit* declarations — see `resolve_ty`),
+            // but a closure *literal*'s own inferred type is still never
+            // deduced into one here — deliberately still `Type::Void`, same
+            // leniency `check_assignable`
             // already gives every other not-yet-modeled expression form.
             Expr::Closure {
                 params,

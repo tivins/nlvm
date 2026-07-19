@@ -1207,8 +1207,38 @@ fn count_params(descriptor: &str) -> usize {
     if inner.trim().is_empty() {
         0
     } else {
-        inner.split(", ").count()
+        split_top_level_params(inner).len()
     }
+}
+
+/// Depth-aware top-level `", "` split over a parameter-list descriptor
+/// string — a plain `split(", ")` miscounts as soon as one parameter's own
+/// descriptor contains a top-level-looking `", "` of its own: a
+/// `Type::Function` parameter (specs.md § Function type assignment, e.g.
+/// `"(int, int) => int"` as a single parameter) or a mangled generic
+/// instantiation (`"system.Map<string, int>"`). Tracks both `(`/`)` and
+/// `<`/`>` depth — mirrors `nl_codegen::native_generics::split_top_level`
+/// (which only needs the latter; the VM sees both).
+fn split_top_level_params(s: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut depth = 0i32;
+    let mut start = 0usize;
+    let bytes = s.as_bytes();
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'<' => depth += 1,
+            b')' | b'>' => depth -= 1,
+            b',' if depth == 0 => {
+                parts.push(s[start..i].trim());
+                start = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    parts.push(s[start..].trim());
+    parts
 }
 
 fn pop2(stack: &mut Vec<Value>) -> Result<(Value, Value), VmError> {

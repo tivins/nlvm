@@ -23,6 +23,15 @@ pub fn type_descriptor(ty: &Type) -> String {
             "unresolved generic type '{name}<...>' ({} args) reached codegen",
             args.len()
         ),
+        Type::Function {
+            params,
+            return_type,
+            ..
+        } => format!(
+            "({}) => {}",
+            params.iter().map(type_descriptor).collect::<Vec<_>>().join(", "),
+            type_descriptor(return_type)
+        ),
     }
 }
 

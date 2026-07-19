@@ -1,0 +1,31 @@
+---
+title: "Phase 9 — explicit function type as a class field (specs.md § Function type assignment)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "21"
+---
+
+#NLFILE phase9/function_type_field/Calculator.nl
+namespace phase9.function_type_field;
+class Calculator {
+	private (int, int) => int operation;
+
+	public construct((int, int) => int operation) {
+		this.operation = operation;
+	}
+
+	public int compute(int a, int b) {
+		auto op = this.operation;
+		return op(a, b);
+	}
+}
+
+#NLFILE phase9/function_type_field/Main.nl
+namespace phase9.function_type_field;
+class Main {
+	public static int main(string[] args) {
+		auto calc = new Calculator((int a, int b) => a * b);
+		system.Out.print(system.Int.toString(calc.compute(3, 7)));
+		return 0;
+	}
+}

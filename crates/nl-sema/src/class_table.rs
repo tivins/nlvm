@@ -178,6 +178,15 @@ pub fn resolve_type(ty: &Type, imports: &HashMap<String, String>) -> Type {
         Type::Union(members) => {
             Type::Union(members.iter().map(|m| resolve_type(m, imports)).collect())
         }
+        Type::Function {
+            params,
+            return_type,
+            throws,
+        } => Type::Function {
+            params: params.iter().map(|p| resolve_type(p, imports)).collect(),
+            return_type: Box::new(resolve_type(return_type, imports)),
+            throws: throws.clone(),
+        },
         other => other.clone(),
     }
 }

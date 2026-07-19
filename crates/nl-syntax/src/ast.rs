@@ -221,6 +221,20 @@ pub enum Type {
     /// `nl-sema`/`nl-codegen` ever see it — they only ever encounter the
     /// monomorphized class's plain `Type::Named("ns.Vector<int>")`.
     Generic(String, Vec<Type>),
+    /// `(Type, Type, ...) => ReturnType [throws Name, ...]` — specs.md §
+    /// Function type assignment. `throws` is parsed for grammar
+    /// completeness but not enforced (same leniency already established for
+    /// `Expr::Closure`'s own `throws` field — see its doc comment).
+    /// Structural: two `Function`s are the same type iff their params and
+    /// return type match, regardless of which closure literal (if any)
+    /// produced them — unlike a closure literal's own codegen-side type,
+    /// which is tied to one synthetic class (see `nl-codegen`'s
+    /// `ExprTy::Closure` doc comment).
+    Function {
+        params: Vec<Type>,
+        return_type: Box<Type>,
+        throws: Vec<String>,
+    },
 }
 
 pub type Block = Vec<Stmt>;
