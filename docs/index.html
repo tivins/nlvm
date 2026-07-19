@@ -27,16 +27,18 @@
 <main>
 
 <section class="hero">
-  <div class="container">
-    <div class="hero-brand">
-      <span class="hero-glyph">nl</span>
-      <span class="hero-eyebrow">The NL programming language</span>
-    </div>
-    <h1>A small language that takes<br><span class="accent">correctness</span> seriously.</h1>
-    <p class="tagline">NL is a statically typed, class-based language with native null safety, checked exceptions and exhaustive matching — compiled to compact bytecode and run by <strong>nlvm</strong>, a lightweight virtual machine written in Rust.</p>
-    <div class="cta-row">
-      <a class="btn btn-primary" href="getting-started.html">Get started</a>
-      <a class="btn btn-ghost" href="tour.html">Take the tour</a>
+  <div class="container hero-grid">
+    <div class="hero-copy">
+      <div class="hero-brand">
+        <span class="hero-glyph">nl</span>
+        <span class="hero-eyebrow">The NL programming language</span>
+      </div>
+      <h1>A small language that takes <span class="accent">correctness</span> seriously.</h1>
+      <p class="tagline">NL is a statically typed, class-based language with native null safety, checked exceptions and exhaustive matching — compiled to compact bytecode and run by <strong>nlvm</strong>, a lightweight virtual machine written in Rust.</p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="getting-started.html">Get started</a>
+        <a class="btn btn-ghost" href="tour.html">Take the tour</a>
+      </div>
     </div>
 
     <div class="terminal">
@@ -49,7 +51,7 @@
 
 <section class="block">
   <div class="container">
-    <p class="kicker reveal">Why NL</p>
+    <p class="kicker reveal"><span class="knum">01</span>Why NL</p>
     <h2 class="section-title reveal">Whole classes of bugs, caught before your program runs</h2>
     <p class="section-sub reveal">Familiar C-family syntax, but the compiler is on your side: nullability, error handling and case analysis are part of the type system, not conventions.</p>
 
@@ -119,7 +121,7 @@ Hello, world!</code></pre>
         <h3><span class="dot">◆</span>Specified and tested</h3>
         <p>The language is defined by a versioned, public specification — <a href="https://github.com/tivins/nlvm-specs">nlvm-specs</a> — and the implementation tracks it release by release, backed by a YAML conformance suite run in CI.</p>
         <pre class="sh"><code>$ nlvm --version
-nlvm 0.5.4 (nlvm-specs 0.8.44)
+nlvm 0.5.5 (nlvm-specs 0.8.44)
 $ nltest tests/
 140 passed, 0 failed, 140 total</code></pre>
       </div>
@@ -133,7 +135,7 @@ $ nltest tests/
     <div class="spotlight-panel reveal">
     <div class="split">
       <div>
-        <p class="kicker">Dogfooding</p>
+        <p class="kicker"><span class="knum">02</span>Dogfooding</p>
         <h2 class="section-title">Our release script is written in NL</h2>
         <p class="section-sub" style="margin-top:14px">Every nlvm release is tagged and pushed by <code>tools/Release.nl</code> — an NL program that reads the changelog with <code>system.text.Regex</code>, and drives git through <code>system.ps.Process</code>. Files, regexes, processes: the standard library is small but it does real work.</p>
         <p style="margin-top:16px"><a href="https://github.com/tivins/nlvm/blob/main/tools/Release.nl">Read the full script →</a></p>
@@ -162,7 +164,7 @@ if (tag.exitCode != 0) {
 
 <section class="block">
   <div class="container">
-    <p class="kicker reveal">Under the hood</p>
+    <p class="kicker reveal"><span class="knum">03</span>Under the hood</p>
     <h2 class="section-title reveal">A compiler and a VM, built as one toolchain</h2>
     <p class="section-sub reveal">One Rust workspace, eight crates. The bytecode format is a single shared definition between compiler and VM, so the two halves can never drift apart.</p>
 
@@ -172,6 +174,33 @@ if (tag.exitCode != 0) {
       <div class="stat reveal"><div class="value">1</div><div class="label">file to ship (.nlp)</div></div>
       <div class="stat reveal"><div class="value">0</div><div class="label">runtime dependencies</div></div>
     </div>
+  </div>
+</section>
+
+<section class="block">
+  <div class="container">
+    <p class="kicker reveal"><span class="knum">04</span>Devlog</p>
+    <h2 class="section-title reveal">Built in the open, written up as it goes</h2>
+    <p class="section-sub reveal">Design decisions, dead ends and release notes — the story behind the toolchain, straight from the workbench.</p>
+
+    <div class="post-list home-posts">
+      <a class="post-card reveal" href="devlog/http-server-demo.html">
+        <span class="date">July 2026 · nlvm-demos</span>
+        <h3>Proving parallelism in a browser tab: the HTTP server demo</h3>
+        <p>One OS thread per connection, a mutex-guarded shared <code>Server</code> instance, and a "fire 5 parallel requests" button that turns real concurrency into something you can watch happen.</p>
+      </a>
+      <a class="post-card reveal" href="devlog/stack-traces.html">
+        <span class="date">July 2026 · release 0.1.1</span>
+        <h3>Teaching the VM to remember: stack traces &amp; StackOverflowException</h3>
+        <p>How exceptions gained real stack traces — a line-number table in the bytecode, a shadow call stack in the VM, and the subtle art of not tracing your own constructor.</p>
+      </a>
+      <a class="post-card reveal" href="devlog/initial-build.html">
+        <span class="date">July 2026 · releases 0.1.0 → 0.5.0</span>
+        <h3>From spec to running VM: the initial build</h3>
+        <p>One Rust workspace, a vertical-slice strategy, and a YAML test runner driving development from day one — phase by phase, up to a single-file program format.</p>
+      </a>
+    </div>
+    <p class="reveal" style="margin-top:22px"><a href="devlog/index.html">All posts →</a></p>
   </div>
 </section>
 
@@ -190,7 +219,10 @@ if (tag.exitCode != 0) {
 
 <footer class="site-footer">
   <div class="container">
-    <div>NL &amp; nlvm — MIT licensed, built in the open.</div>
+    <div>
+      <div>NL &amp; nlvm — MIT licensed, built in the open.</div>
+      <div class="footer-note">This site is hand-written HTML &amp; CSS. No framework, no build step, no tracking.</div>
+    </div>
     <div>
       <a href="https://github.com/tivins/nlvm">nlvm</a> ·
       <a href="https://github.com/tivins/nlvm-specs">nlvm-specs</a> ·
