@@ -1,0 +1,78 @@
+{
+  "name": "nl-language",
+  "displayName": "NL Language",
+  "description": "Syntax highlighting and linting for the NL language (nlvm)",
+  "version": "0.0.1",
+  "publisher": "nlvm",
+  "private": true,
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "activationEvents": [
+    "onLanguage:nl"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "languages": [
+      {
+        "id": "nl",
+        "aliases": [
+          "NL",
+          "nl"
+        ],
+        "extensions": [
+          ".nl"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "nl",
+        "scopeName": "source.nl",
+        "path": "./syntaxes/nl.tmLanguage.json"
+      }
+    ],
+    "configuration": {
+      "title": "NL",
+      "properties": {
+        "nl.compilerPath": {
+          "type": "string",
+          "default": "nlc",
+          "description": "Path to the nlc compiler executable used for linting."
+        },
+        "nl.lintOnSave": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run nlc -l on the current file every time it is saved."
+        },
+        "nl.lintOnOpen": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run nlc -l on .nl files when they are opened."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "nl.lintCurrentFile",
+        "title": "NL: Lint Current File"
+      }
+    ]
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,150 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "NL",
+  "scopeName": "source.nl",
+  "fileTypes": ["nl"],
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#storage-types" },
+    { "include": "#constants" },
+    { "include": "#declarations" },
+    { "include": "#annotations-like" },
+    { "include": "#functions" },
+    { "include": "#punctuation" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.nl",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.nl",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.nl",
+      "begin": "\"",
+      "end": "\"",
+      "patterns": [
+        {
+          "name": "constant.character.escape.nl",
+          "match": "\\\\[ntr\"\\\\]"
+        },
+        {
+          "name": "invalid.illegal.unknown-escape.nl",
+          "match": "\\\\."
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.float.nl",
+          "match": "\\b[0-9]+\\.[0-9]+\\b"
+        },
+        {
+          "name": "constant.numeric.integer.nl",
+          "match": "\\b[0-9]+\\b"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.nl",
+          "match": "\\b(true|false)\\b"
+        },
+        {
+          "name": "constant.language.null.nl",
+          "match": "\\b(null|undefined)\\b"
+        },
+        {
+          "name": "variable.language.this.nl",
+          "match": "\\b(this|super|Self)\\b"
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.nl",
+          "match": "\\b(if|else|while|for|break|continue|switch|case|default|match|return|try|catch|finally|throw|instanceof)\\b"
+        },
+        {
+          "name": "keyword.other.nl",
+          "match": "\\b(namespace|use|as|new|extends|implements|throws|typedef|type|operator)\\b"
+        },
+        {
+          "name": "storage.modifier.nl",
+          "match": "\\b(public|private|protected|static|final|abstract|readonly|const|nodiscard|template|ref|auto)\\b"
+        }
+      ]
+    },
+    "storage-types": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.nl",
+          "match": "\\b(int|float|bool|byte|string|void)\\b"
+        }
+      ]
+    },
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(class|interface|enum)\\s+([A-Za-z_][A-Za-z0-9_]*)\\b",
+          "captures": {
+            "1": { "name": "storage.type.class.nl" },
+            "2": { "name": "entity.name.type.class.nl" }
+          }
+        },
+        {
+          "match": "\\b(construct|destruct)\\b",
+          "name": "entity.name.function.constructor.nl"
+        },
+        {
+          "match": "\\b(extends|implements|instanceof)\\s+([A-Za-z_][A-Za-z0-9_.]*)\\b",
+          "captures": {
+            "1": { "name": "keyword.other.nl" },
+            "2": { "name": "entity.name.type.class.nl" }
+          }
+        }
+      ]
+    },
+    "annotations-like": {
+      "patterns": [
+        {
+          "name": "entity.name.type.class.nl",
+          "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+        }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        {
+          "match": "\\b([a-zA-Z_][A-Za-z0-9_]*)\\s*(?=\\()",
+          "name": "entity.name.function.nl"
+        }
+      ]
+    },
+    "punctuation": {
+      "patterns": [
+        {
+          "name": "keyword.operator.nl",
+          "match": "(\\+\\+|--|<=>|==|!=|<=|>=|&&|\\|\\||\\?\\?|\\?:|=>|->|\\+=|-=|\\*=|/=|%=|[+\\-*/%<>!=&|^?:])"
+        },
+        {
+          "name": "punctuation.separator.nl",
+          "match": "[;,.]"
+        }
+      ]
+    }
+  }
+}
