@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Liskov by the compiler, not by convention — nlvm devlog</title>
+<meta name="description" content="A new nlvm-demos entry built around one specific compiler rule: an overriding method's throws clause may only narrow, never widen, a parent's checked exceptions — Liskov substitution enforced at compile time instead of left to code review.">
+<link rel="stylesheet" href="../assets/style.css">
+<meta property="og:image" content="https://tivins.github.io/nlvm/assets/brand/social-preview.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" type="image/svg+xml" href="../assets/brand/logo.svg">
+</head>
+<body>
+
+<header class="site-header">
+  <div class="container">
+    <a class="wordmark" href="../index.html"><img class="glyph" src="../assets/brand/logo.svg" alt="NL"><span class="name">nl<span class="vm">vm</span></span></a>
+    <nav class="site-nav">
+      <a href="../index.html">Home</a>
+      <a href="../tour.html">Tour</a>
+      <a href="../demos.html">Demos</a>
+      <a href="../getting-started.html">Get started</a>
+      <a href="index.html" class="active">Devlog</a>
+      <a class="gh" href="https://github.com/tivins/nlvm">GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main class="prose">
+
+  <p class="kicker">Devlog · July 2026 · nlvm-demos</p>
+  <h1>Liskov by the compiler, not by convention</h1>
+  <p class="lede">"NL is a good fit for SOLID code" is a claim any object-oriented language can make. The interesting part is that one letter of SOLID — Liskov substitution — isn't just <em>possible</em> in NL, it's partly <em>enforced</em>: the compiler rejects an overriding method whose <code>throws</code> clause would let a subclass break a caller that only trusts the parent's contract. <a href="https://github.com/tivins/nlvm-demos/tree/main/07_liskov">07_liskov</a>, the newest <a href="https://github.com/tivins/nlvm-demos">nlvm-demos</a> entry, is built around exactly that rule.</p>
+
+  <h2>The rule: E016 and E017</h2>
+  <p>Per <a href="https://github.com/tivins/nlvm-specs/blob/main/docs/compiler.md#exception-inheritance-rules">compiler.md § Exception inheritance rules</a>, when a method overrides a parent method, its <code>throws</code> clause must <em>cover</em> every <em>checked</em> exception (a subclass of <code class="stdlib">Exception</code> that isn't a <code class="stdlib">RuntimeException</code>) the parent declares:</p>
+  <ul>
+    <li>For each checked exception <code>E</code> the parent declares, the child must declare <code>E</code> or a subclass of <code>E</code> — <strong>E016</strong> otherwise.</li>
+    <li>The child may not declare any checked exception that isn't a subtype of something the parent already declared — <strong>E017</strong> otherwise.</li>
+  </ul>
+  <p>Runtime exceptions are exempt on both sides — an override is free to add or drop those, matching the leniency the checked/unchecked split already gives ordinary calls (see <a href="https://github.com/tivins/nlvm-specs/blob/main/docs/specs.md#checked-exception-propagation">specs.md § Checked exception propagation</a>). Only the checked half of a <code>throws</code> clause is covariant-checked.</p>
+  <p>That single relation — "child's declared type is the parent's type or a subtype of it" — is Liskov substitution stated for exceptions instead of for return/parameter types: code written against the parent's contract, catching the parent's declared exceptions, keeps working no matter which subclass it actually got at runtime, because the subclass is contractually barred from surprising it with something wider.</p>
+
+  <h2>Building a demo around it</h2>
+  <p><code>RecordSource</code> is an abstract class with one contract: produce the next record, or fail with (a subtype of) a checked <code>ImportException</code>:</p>
+  <pre class="nl"><code>abstract class RecordSource {
+    public abstract bool hasNext() const;
+    public abstract string next() throws ImportException;
+}</code></pre>
+  <p>Two unrelated implementations satisfy it. <code>MemorySource</code> reads from an in-memory queue and keeps the exact same <code>throws ImportException</code> — the unremarkable case. <code>CsvLineSource</code> parses <code>"field,field,field"</code> lines and narrows to <code>throws InvalidRecordException</code>, a subclass of <code>ImportException</code> declared purely to carry the offending line:</p>
+  <pre class="nl"><code>public string next() throws InvalidRecordException {
+    string line = this.lines.get(this.cursor);
+    this.cursor = this.cursor + 1;
+
+    string[] fields = line.split(",");
+    if (fields.length() != 3) {
+        throw new InvalidRecordException(
+            "expected 3 comma-separated fields, got " + fields.length(),
+            line
+        );
+    }
+    return line;
+}</code></pre>
+  <p>Both are legal overrides — same type, or a narrower one — so <code>Main.nl</code> can hold a <code class="stdlib">system.List&lt;RecordSource&gt;</code> with one of each and read every source through a single <code>catch (ImportException e)</code>. Neither the loop nor the catch clause knows which concrete <code>next()</code> ran; that's substitutability made to actually run rather than just argued about:</p>
+  <pre class="nl"><code>for (auto source : sources) {
+    while (source.hasNext()) {
+        try {
+            string record = source.next();
+            system.Out.print("  ok: " + record + "\n");
+        }
+        catch (ImportException e) {
+            system.Out.print("  rejected: " + e.message + "\n");
+        }
+    }
+}</code></pre>
+
+  <h2>Two ways to break it — and what the compiler says</h2>
+  <p>To make the rule concrete rather than theoretical, I compiled two deliberately broken variants of the same override. Widening — replacing <code>throws ImportException</code> with the strictly broader <code>throws Exception</code> — is rejected immediately:</p>
+  <pre class="nl"><code>public string next() throws Exception {
+    throw new Exception("boom");
+}
+// Error: E016 — Overriding method 'next' does not declare exception
+// 'liskov.ImportException' from parent method</code></pre>
+  <p>The message is precise about <em>why</em>: <code>Exception</code> is a supertype of <code>ImportException</code>, not a subtype, so it doesn't cover the parent's contract — any caller written against <code>RecordSource</code> that only knows how to catch <code>ImportException</code> would have no defense against a bare <code>Exception</code> leaking out of this override. Adding an unrelated checked exception alongside a valid one fails the same way, for the opposite reason:</p>
+  <pre class="nl"><code>public string next() throws ImportException, UnrelatedException {
+    throw new ImportException("boom");
+}
+// Error: E017 — Overriding method 'next' declares exception
+// 'liskov.UnrelatedException' not thrown by parent method</code></pre>
+  <p>Both diagnostics are shown in the demo's <a href="https://github.com/tivins/nlvm-demos/blob/main/07_liskov/README.md">README</a> as illustrations rather than compiled sources — the demo itself has to stay green, so the broken variants live only in the write-up, quoted from an actual failed <code>nlc</code> run rather than guessed at.</p>
+
+  <h2>Why this is worth pointing out</h2>
+  <p>Checked exceptions and override covariance both exist in other languages, but the combination NL enforces is stricter than the one most checked-exception languages settle for. Java's rule only forbids <em>widening</em>: an override is free to declare fewer checked exceptions than its parent, including none at all, and the compiler won't object even though that quietly changes what a caller programming against the parent type can expect to catch. NL's E016 closes that gap from the other side — dropping a parent's checked exception without narrowing it to a covering subtype is rejected exactly like widening is. The two rules together mean the <code>throws</code> clause of an override is pinned to "the same contract, or a more specific one," full stop, which is the guarantee Liskov substitution actually asks for and Java's checked-exception rule only half-provides.</p>
+
+  <hr>
+  <p>Source and README are in <a href="https://github.com/tivins/nlvm-demos/tree/main/07_liskov">nlvm-demos/07_liskov</a>. See the <a href="../demos.html">demos page</a> for the rest of the set, and <a href="https://github.com/tivins/nlvm-specs/blob/main/docs/compiler.md#exception-inheritance-rules">compiler.md § Exception inheritance rules</a> for the rule's full specification.</p>
+
+</main>
+
+<footer class="site-footer">
+  <div class="container">
+    <div>NL &amp; nlvm — MIT licensed, built in the open.</div>
+    <div>
+      <a href="https://github.com/tivins/nlvm">nlvm</a> ·
+      <a href="https://github.com/tivins/nlvm-specs">nlvm-specs</a> ·
+      <a href="https://github.com/tivins/nlvm-demos">nlvm-demos</a> ·
+      <a href="index.html">Devlog</a>
+    </div>
+  </div>
+</footer>
+
+<script src="../assets/site.js"></script>
+</body>
+</html>
