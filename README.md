@@ -1,6 +1,6 @@
 # nlvm
 
-Implementation of the **NL** language, specified in [`nlvm-specs`](https://github.com/tivins/nlvm-specs): compiler (`nlc`), bytecode virtual machine (`nlvm`), and YAML test runner (`nltest`).
+Implementation of the **NL** language, specified in [`nlvm-specs`](https://github.com/nlvm-lang/nlvm-specs): compiler (`nlc`), bytecode virtual machine (`nlvm`), and YAML test runner (`nltest`).
 
 The `nlvm-specs` release currently targeted is tracked in [`SPECS_VERSION`](SPECS_VERSION) (bumped whenever new specs are implemented) and reported by `nlc --version` / `nlvm --version`.
 
@@ -72,13 +72,13 @@ cargo test --workspace
 cargo run -p nl-test-runner -- tests
 ```
 
-The canonical spec suite lives in [`nlvm-specs/tests`](https://github.com/tivins/nlvm-specs/tree/main/tests) (not in this repository) and can be run the same way:
+The canonical spec suite lives in [`nlvm-specs/tests`](https://github.com/nlvm-lang/nlvm-specs/tree/main/tests) (not in this repository) and can be run the same way:
 
 ```sh
 cargo run -p nl-test-runner -- /local-path-to/nlvm-specs/tests
 ```
 
-Each `m{N}_*.yaml` file there corresponds to a milestone from [`nlvm-specs/docs/milestones.md`](https://github.com/tivins/nlvm-specs/blob/main/docs/milestones.md). See [`nlvm-specs/docs/tests.md`](https://github.com/tivins/nlvm-specs/blob/main/docs/tests.md) for the format.
+Each `m{N}_*.yaml` file there corresponds to a milestone from [`nlvm-specs/docs/milestones.md`](https://github.com/nlvm-lang/nlvm-specs/blob/main/docs/milestones.md). See [`nlvm-specs/docs/tests.md`](https://github.com/nlvm-lang/nlvm-specs/blob/main/docs/tests.md) for the format.
 
 ## License
 
