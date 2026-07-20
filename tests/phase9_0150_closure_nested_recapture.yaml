@@ -1,0 +1,50 @@
+---
+title: "Phase 9 — regression: a closure nested 2+ levels deep referencing a variable captured by its *enclosing* closure (not its own params/locals) — previously failed to compile ('undefined variable') because compile_closure only resolved capture candidates via lookup_local, never falling back to self.captured_fields for a closure compiled inside another closure's invoke method. Covers both a read-only re-capture and a mutated (boxed) one, propagated through both levels and visible back in the original scope."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "8,35"
+---
+
+#NLFILE phase9/closure_nested_recapture/Main.nl
+namespace phase9.closure_nested_recapture;
+class Main {
+	// `inner` never mutates `x` — a plain by-value re-capture through two
+	// levels of closure nesting.
+	public static int readOnly() {
+		int x = 7;
+		auto outer = () => {
+			auto inner = () => {
+				return x + 1;
+			};
+			int v = inner();
+			return v;
+		};
+		int r = outer();
+		return r;
+	}
+
+	// `inner` mutates `x`, which `outer` never touches directly — `x` must
+	// be boxed and the same box shared across all three scopes (the
+	// original local, `outer`'s re-capture, and `inner`'s own capture).
+	public static int mutated() {
+		int x = 10;
+		auto outer = () => {
+			auto inner = () => {
+				x++;
+				return x;
+			};
+			int a = inner();
+			int b = inner();
+			return a + b;
+		};
+		int r = outer();
+		return r + x;
+	}
+
+	public static int main(string[] args) {
+		system.Out.print(system.Int.toString(readOnly()));
+		system.Out.print(",");
+		system.Out.print(system.Int.toString(mutated()));
+		return 0;
+	}
+}

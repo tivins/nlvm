@@ -176,7 +176,7 @@ a:hover { color: var(--primary-bright); }
   line-height: 1.15;
 }
 
-.hero h1 .accent { color: var(--primary); }
+.accent { color: var(--primary); }
 
 .hero .tagline {
   margin: 18px 0 0;

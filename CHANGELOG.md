@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.8]
+
+### Fixed
+- A closure nested two or more levels deep, referencing a variable captured by an enclosing closure (rather than its own parameters/locals), now compiles instead of failing with "undefined variable" — the capture is correctly re-propagated (including its shared box, if mutated) through every level of nesting.
+
 ## [0.5.7]
 
 Closures now capture variables by reference, matching specs.md § Variable capture.

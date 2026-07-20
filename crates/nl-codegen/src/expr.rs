@@ -170,6 +170,15 @@ pub(crate) struct CapturedField {
     pub boxed: bool,
 }
 
+/// Where a closure literal's capture gets its *current value* from at the
+/// creation site (`compile_closure`'s copy loop) — either an ordinary local
+/// slot in the enclosing scope, or (2+ levels of closure nesting) a capture
+/// already sitting on the enclosing closure's own `this`.
+enum CaptureSource {
+    Local(u16),
+    Recaptured,
+}
+
 pub fn expr_ty_of(ty: &Type) -> ExprTy {
     match ty {
         Type::Int => ExprTy::Int,
@@ -726,6 +735,18 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// Emits `this.name` for a captured variable *without* unwrapping
+    /// `Box<ty>.value` when `boxed` — unlike `emit_get_captured_field`, this
+    /// is for copying the raw source (box reference or plain value) into
+    /// another closure's own field at its creation site
+    /// (`CaptureSource::Recaptured` in `compile_closure`), not for reading
+    /// the value in an expression position.
+    fn emit_get_captured_field_raw(&mut self, name: &str, ty: &ExprTy, boxed: bool) {
+        self.op_u16(Opcode::Load, 0, 1);
+        let field_ref = self.captured_field_ref(name, ty, boxed);
+        self.op_u16(Opcode::GetField, field_ref, 0);
+    }
+
     /// `Box<T>.value`'s field-ref constant-pool index, for the box wrapping
     /// `inner_ty` — vm.md § Ref parameters (boxing). Shared by every
     /// read/write of a `ref` parameter (`LocalSlot::boxed`) and by the
@@ -876,22 +897,29 @@ impl<'a> Emitter<'a> {
         candidates.retain(|n| !param_names.contains(n.as_str()));
         candidates.sort();
 
-        // Only names that actually resolve as a local in *this* (enclosing)
-        // scope are real captures; anything else (a class reference, or a
-        // name declared inside the closure body itself) is left for the
-        // inner emitter to resolve normally. `slot.boxed` (already decided
-        // at this local's declaration, by `stmt::compile_stmt`'s `VarDecl`
-        // arms/`compile_method`'s parameter loop consulting
-        // `Emitter::boxed_captures`) carries over unchanged: a boxed local's
-        // slot already physically holds the shared `Box<T>` reference, so
-        // simply loading it below (the creation-site copy loop) already
-        // copies the box, not a snapshot of its contents.
-        let captures: Vec<(String, ExprTy, u16, bool)> = candidates
+        // A candidate is a real capture if it resolves either as a local in
+        // *this* (enclosing) scope, or — when `self` is itself a closure's
+        // `invoke` emitter — as one of *its own* captured fields (a closure
+        // nested 2+ levels deep referencing a variable captured by an
+        // intermediate closure, not its own params/locals). Anything else (a
+        // class reference, or a name declared inside the closure body
+        // itself) is left for the inner emitter to resolve normally.
+        // `boxed` (already decided at the original declaration, by
+        // `stmt::compile_stmt`'s `VarDecl` arms/`compile_method`'s parameter
+        // loop consulting `Emitter::boxed_captures`, and carried unchanged
+        // through every re-capture since `captured_fields` copies it as-is)
+        // means the source already physically holds the shared `Box<T>`
+        // reference, so simply copying it below (the creation-site copy
+        // loop) already copies the box, not a snapshot of its contents.
+        let captures: Vec<(String, ExprTy, CaptureSource, bool)> = candidates
             .into_iter()
             .filter_map(|name| {
-                self.lookup_local(&name)
-                    .ok()
-                    .map(|slot| (name, slot.ty, slot.index, slot.boxed.is_some()))
+                if let Ok(slot) = self.lookup_local(&name) {
+                    return Some((name, slot.ty, CaptureSource::Local(slot.index), slot.boxed.is_some()));
+                }
+                self.captured_fields.get(&name).map(|field| {
+                    (name.clone(), field.ty.clone(), CaptureSource::Recaptured, field.boxed)
+                })
             })
             .collect();
 
@@ -1049,16 +1077,26 @@ impl<'a> Emitter<'a> {
 
         // Creation site: allocate, then copy each capture's current value
         // into the new object's field of the same name. For a boxed capture
-        // (vm.md § Variable capture and boxing), `outer_index`'s slot
-        // already physically holds the shared `Box<ty>` reference (see
-        // `LocalSlot::boxed`), so this `Load` copies the box itself, not a
-        // snapshot of its contents — the closure and the enclosing scope end
-        // up referencing the exact same box.
+        // (vm.md § Variable capture and boxing), the source already
+        // physically holds the shared `Box<ty>` reference (see
+        // `LocalSlot::boxed`/`CapturedField::boxed`), so this copies the box
+        // itself, not a snapshot of its contents — the closure and its
+        // source end up referencing the exact same box. `CaptureSource::
+        // Recaptured` re-reads `this.name` (this closure's own captured
+        // field, set up the same way when *this* closure was itself
+        // created) instead of a local slot — the 2+ levels of nesting case.
         let class_index = self.cp.add_class(&synth_fqcn);
         self.op_u16(Opcode::New, class_index, 1);
-        for (name, ty, outer_index, boxed) in &captures {
+        for (name, ty, source, boxed) in &captures {
             self.op(Opcode::Dup, 1);
-            self.op_u16(Opcode::Load, *outer_index, 1);
+            match source {
+                CaptureSource::Local(outer_index) => {
+                    self.op_u16(Opcode::Load, *outer_index, 1);
+                }
+                CaptureSource::Recaptured => {
+                    self.emit_get_captured_field_raw(name, ty, *boxed);
+                }
+            }
             let field_ref = self.captured_field_ref(name, ty, *boxed);
             self.op_u16(Opcode::SetField, field_ref, -2);
         }
