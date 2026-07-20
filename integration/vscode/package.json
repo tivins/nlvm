@@ -8,7 +8,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/tivins/nlvm.git",
+    "url": "https://github.com/nlvm-lang/nlvm.git",
     "directory": "integration/vscode"
   },
   "engines": {
