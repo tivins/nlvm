@@ -40,7 +40,13 @@ cargo build -r
 
 ## Install
 
-Linux (create symbolic links in `~/.local/bin`, which must be on `$PATH`)
+One-liner (downloads the latest prebuilt `nlc`/`nlvm` for Linux x86_64 or macOS arm64 into `~/.local/bin`, which must be on `$PATH`):
+
+```sh
+curl -fsSL https://nlvm.dev/install.sh | bash
+```
+
+From a clone (builds from source instead, same `~/.local/bin` target — use this on other platforms):
 
 ```sh
 ./install.sh

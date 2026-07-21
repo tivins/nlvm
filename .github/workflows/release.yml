@@ -40,11 +40,14 @@ jobs:
           cp target/${{ matrix.target }}/release/nlvm "$pkg/"
           cp README.md LICENSE "$pkg/"
           tar czf "$pkg.tar.gz" "$pkg"
+          shasum -a 256 "$pkg.tar.gz" > "$pkg.tar.gz.sha256"
 
       - uses: actions/upload-artifact@v4
         with:
           name: nlvm-${{ matrix.target }}
-          path: nlvm-*.tar.gz
+          path: |
+            nlvm-*.tar.gz
+            nlvm-*.tar.gz.sha256
 
   release:
     needs: build
@@ -57,8 +60,13 @@ jobs:
           path: dist
           merge-multiple: true
 
+      - name: Combine checksums
+        run: cat dist/*.sha256 > dist/SHA256SUMS
+
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.tar.gz
+          files: |
+            dist/*.tar.gz
+            dist/SHA256SUMS
           generate_release_notes: true
