@@ -17,7 +17,7 @@ use nl_syntax::ast::{
 };
 
 use crate::class_table::{self, ClassTable};
-use crate::error::{LocatedError, SemaError};
+use crate::error::{LocatedError, LocatedWarning, SemaError, SemaWarning};
 use crate::types;
 
 /// A method's signature, as seen from call sites within the same class
@@ -42,12 +42,13 @@ pub fn check_source_file(
     file: &SourceFile,
     all_files: &[SourceFile],
     classes: &ClassTable,
-) -> Result<(), LocatedError> {
+) -> Result<Vec<LocatedWarning>, LocatedError> {
     let SourceItem::Class(class) = &file.item else {
         // Interfaces declare signatures only — nothing to flow-check yet.
-        return Ok(());
+        return Ok(Vec::new());
     };
 
+    let mut warnings: Vec<(u32, SemaWarning)> = Vec::new();
     let result: Result<(), Located> = (|| {
         locate(class.decl_line, check_duplicate_methods(class))?;
         locate(class.decl_line, check_constructor_delegation(class))?;
@@ -78,7 +79,7 @@ pub fn check_source_file(
         }
 
         for method in &class.methods {
-            check_method(method, &sigs, classes, &imports, &this_fqcn)
+            check_method(method, &sigs, classes, &imports, &mut warnings, &this_fqcn)
                 .map_err(|(line, e)| (line, relabel_template_operator_error(e, &this_fqcn)))?;
             // compiler.md § Exception inheritance rules — E016/E017. Only
             // meaningful for instance methods (static methods hide, not
@@ -93,11 +94,22 @@ pub fn check_source_file(
         Ok(())
     })();
 
-    result.map_err(|(line, error)| LocatedError {
-        file: file.path.clone(),
-        line,
-        error,
-    })
+    result
+        .map(|()| {
+            warnings
+                .into_iter()
+                .map(|(line, warning)| LocatedWarning {
+                    file: file.path.clone(),
+                    line,
+                    warning,
+                })
+                .collect()
+        })
+        .map_err(|(line, error)| LocatedError {
+            file: file.path.clone(),
+            line,
+            error,
+        })
 }
 
 /// compiler.md § Template instantiation — E006. This codebase has no
@@ -590,6 +602,7 @@ fn check_method(
     sigs: &HashMap<String, MethodSig>,
     classes: &ClassTable,
     imports: &HashMap<String, String>,
+    warnings: &mut Vec<(u32, SemaWarning)>,
     this_fqcn: &str,
 ) -> Result<(), Located> {
     let this_ty = if method.is_static {
@@ -630,6 +643,7 @@ fn check_method(
         const_vars: HashSet::new(),
         readonly_loop_vars: HashSet::new(),
         current_line: method.decl_line,
+        warnings: Vec::new(),
     };
     checker.push_scope();
     let mut assigned = HashSet::new();
@@ -655,6 +669,7 @@ fn check_method(
         .check_stmts(&method.body, assigned)
         .map_err(|e| (checker.current_line, e))?;
     checker.pop_scope();
+    warnings.append(&mut checker.warnings);
     Ok(())
 }
 
@@ -741,6 +756,11 @@ struct MethodChecker<'a> {
     /// own `decl_line` for errors raised before any statement is checked
     /// (see the param-validation checks in `check_method`).
     current_line: u32,
+    /// compiler.md § Warnings, W001 (specs.md § Nodiscard) — collected
+    /// rather than raised as a `SemaError`: a nodiscard warning never fails
+    /// compilation, so it can't go through the same `Result<_, Located>`
+    /// path as everything else in this checker.
+    warnings: Vec<(u32, SemaWarning)>,
 }
 
 impl<'a> MethodChecker<'a> {
@@ -913,6 +933,62 @@ impl<'a> MethodChecker<'a> {
             .get(name)
             .cloned()
             .unwrap_or_else(|| name.to_string())
+    }
+
+    /// specs.md § Nodiscard support — the name of the nodiscard method `expr`
+    /// calls, if `expr` (an expression-statement's whole expression) is
+    /// itself a call to one. Deliberately narrow: only a bare same-class call
+    /// (`foo()`) or a direct instance call (`obj.method()`) is recognized,
+    /// resolved through `simple_receiver_ty` below — a static/stdlib/native
+    /// receiver never carries `is_nodiscard` (only concrete user classes do),
+    /// so those are left alone rather than guessed at.
+    fn nodiscard_call_name(&self, expr: &Expr) -> Option<String> {
+        match expr {
+            Expr::Call(name, args) => {
+                let (_, method) =
+                    class_table::find_method_owner(self.classes, &self.this_fqcn, name, args.len())?;
+                method.is_nodiscard.then(|| name.clone())
+            }
+            Expr::MethodCall(target, name, args) => {
+                let Type::Named(fqcn) = self.simple_receiver_ty(target)? else {
+                    return None;
+                };
+                let (_, method) = class_table::find_method_owner(self.classes, &fqcn, name, args.len())?;
+                method.is_nodiscard.then(|| name.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// Best-effort static type of a call *receiver* expression, without
+    /// `check_expr`'s full side-effecting type propagation (error checks,
+    /// definite-assignment tracking) — only enough shapes to recognize the
+    /// receiver of a realistic `obj.method()`/`this.field.method()`/chained
+    /// `a.b().c()` nodiscard call. Anything else (indexing, casts, stdlib
+    /// receivers, ...) gives up (`None`), same leniency as the rest of this
+    /// checker for expression forms it doesn't fully model.
+    fn simple_receiver_ty(&self, expr: &Expr) -> Option<Type> {
+        match expr {
+            Expr::This => self.this_ty.clone(),
+            Expr::Ident(name) => {
+                let (id, ty) = self.resolve(name)?;
+                Some(self.narrowed.get(&id).cloned().unwrap_or(ty))
+            }
+            Expr::FieldAccess(target, name) => {
+                let Type::Named(fqcn) = self.simple_receiver_ty(target)? else {
+                    return None;
+                };
+                self.field_ty(&fqcn, name)
+            }
+            Expr::New(class_name, ..) => Some(Type::Named(self.class_fqcn(class_name))),
+            Expr::MethodCall(target, name, args) => {
+                let Type::Named(fqcn) = self.simple_receiver_ty(target)? else {
+                    return None;
+                };
+                self.method_return_ty(&fqcn, name, args.len())
+            }
+            _ => None,
+        }
     }
 
     /// Walks `fqcn`'s `extends` chain, so a field/method declared on an
@@ -1148,6 +1224,19 @@ impl<'a> MethodChecker<'a> {
             StmtKind::Return(None) => Ok((assigned, true)),
             StmtKind::Expr(expr) => {
                 self.check_expr(expr, &mut assigned)?;
+                // specs.md § Nodiscard — compiler.md W001: a bare call
+                // statement (`foo();`/`obj.method();`) discards whatever it
+                // returns. Only checked at this exact shape (the outermost
+                // expression of an expression-statement is itself the call)
+                // — same leniency this checker already applies elsewhere to
+                // expression forms it doesn't fully model, rather than
+                // reimplementing `check_expr`'s complete type propagation
+                // just to chase a nodiscard call buried inside e.g. a binary
+                // operand.
+                if let Some(name) = self.nodiscard_call_name(expr) {
+                    self.warnings
+                        .push((stmt.line, SemaWarning::NodiscardDiscarded(name)));
+                }
                 // `system.ps.Process.exit(...)` (stdlib.md: "Terminal
                 // statement: does not return") — treated as terminating the
                 // current path exactly like `throw`/`return`, so e.g. an

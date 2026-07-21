@@ -200,3 +200,45 @@ impl std::error::Error for LocatedError {
         Some(&self.error)
     }
 }
+
+/// A non-fatal diagnostic — compiler.md § Warnings: reported alongside a
+/// successful compilation, never turns it into a `LocatedError`. Only W001
+/// exists so far (specs.md § Nodiscard).
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum SemaWarning {
+    #[error("W001 — Return value of nodiscard method '{0}' is discarded")]
+    NodiscardDiscarded(String),
+}
+
+impl SemaWarning {
+    pub fn code(&self) -> &'static str {
+        match self {
+            SemaWarning::NodiscardDiscarded(_) => "W001",
+        }
+    }
+}
+
+/// A `SemaWarning` with the source location it was raised at — see
+/// `LocatedError`, same idea for warnings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocatedWarning {
+    pub file: String,
+    pub line: u32,
+    pub warning: SemaWarning,
+}
+
+impl LocatedWarning {
+    pub fn code(&self) -> &'static str {
+        self.warning.code()
+    }
+}
+
+impl std::fmt::Display for LocatedWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if self.file.is_empty() {
+            write!(f, "{}", self.warning)
+        } else {
+            write!(f, "{}:{}: {}", self.file, self.line, self.warning)
+        }
+    }
+}

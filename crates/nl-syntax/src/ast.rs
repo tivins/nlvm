@@ -155,6 +155,10 @@ pub struct MethodDecl {
     /// Cannot be overridden by a subclass (compiler.md, E036). Mutually
     /// exclusive with `is_abstract` (E049).
     pub is_final: bool,
+    /// `nodiscard` method modifier — specs.md § Nodiscard. Calling this
+    /// method and discarding the return value produces a W001 warning
+    /// (compiler.md § Warnings), not a hard error.
+    pub is_nodiscard: bool,
     pub return_type: Type,
     pub params: Vec<Param>,
     /// `throws T1, T2, ...` — parsed and carried into bytecode metadata, but

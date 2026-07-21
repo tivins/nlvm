@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0]
+
+### Added
+- `nodiscard` method modifier (specs.md § Nodiscard) — previously a parse error whenever used. Calling a `nodiscard` method and discarding its return value as a bare statement now reports warning `W001` (compiler.md § Warnings) instead of failing compilation. `nlc` prints reported warnings to stderr without aborting the build.
+
 ## [0.5.10]
 
 ### Added

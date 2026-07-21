@@ -105,12 +105,20 @@ fn main() -> Result<()> {
         files.push(file);
     }
 
-    if let Err(e) = nl_sema::check_compile(&files) {
-        if lint {
-            eprintln!("{e}");
-            std::process::exit(1);
+    match nl_sema::check_compile_with_warnings(&files) {
+        Ok(warnings) => {
+            // compiler.md § Warnings: reported, never fail the build.
+            for w in &warnings {
+                eprintln!("{w}");
+            }
         }
-        return Err(anyhow::anyhow!("{e}"));
+        Err(e) => {
+            if lint {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+            return Err(anyhow::anyhow!("{e}"));
+        }
     }
 
     // `-l`/`--lint`: parse + semantic checks only, no codegen and no output

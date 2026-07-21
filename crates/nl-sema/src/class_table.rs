@@ -36,6 +36,11 @@ pub struct MethodInfo {
     pub is_abstract: bool,
     /// specs.md § Final classes and methods — E036.
     pub is_final: bool,
+    /// specs.md § Nodiscard — compiler.md § Warnings, W001. Always `false`
+    /// for interface method signatures (`nl_syntax::ast::MethodSig` doesn't
+    /// carry this modifier — nodiscard is checked at concrete call sites
+    /// only, not through an interface-typed receiver).
+    pub is_nodiscard: bool,
     /// Resolved (FQCN) `throws` clause — compiler.md § Exception checking.
     pub throws: Vec<Type>,
 }
@@ -358,6 +363,7 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                         visibility: m.visibility,
                         is_abstract: m.is_abstract,
                         is_final: m.is_final,
+                        is_nodiscard: m.is_nodiscard,
                         throws: resolve_throws(m),
                     })
                     .collect();
@@ -427,6 +433,7 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                         // unrelated to the `abstract class`/E033 rule below.
                         is_abstract: false,
                         is_final: false,
+                        is_nodiscard: false,
                         throws: Vec::new(),
                     })
                     .collect();

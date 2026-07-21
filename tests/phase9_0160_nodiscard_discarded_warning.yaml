@@ -1,0 +1,45 @@
+---
+title: "Nodiscard — discarding the return value of a `nodiscard` method reports W001 (specs.md § Nodiscard, compiler.md § Warnings)"
+file_separator: "#NLFILE"
+compile_only: true
+expected_warning: "W001"
+---
+
+#NLFILE phase9/nodiscard/Result.nl
+namespace phase9.nodiscard;
+
+class Result
+{
+    private bool success;
+
+    public construct(bool success) {
+        this.success = success;
+    }
+
+    public bool isSuccess() {
+        return this.success;
+    }
+}
+
+#NLFILE phase9/nodiscard/FileHandler.nl
+namespace phase9.nodiscard;
+
+class FileHandler
+{
+    public construct() {}
+
+    public nodiscard Result openFile(string filename) {
+        return new Result(true);
+    }
+}
+
+#NLFILE phase9/nodiscard/Main.nl
+namespace phase9.nodiscard;
+
+class Main {
+    public static int main(string[] args) {
+        FileHandler handler = new FileHandler();
+        handler.openFile("data.txt"); // Warning: nodiscard return value is discarded
+        return 0;
+    }
+}

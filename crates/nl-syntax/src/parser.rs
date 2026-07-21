@@ -499,6 +499,7 @@ impl Parser {
         let mut readonly = false;
         let mut is_abstract = false;
         let mut is_final = false;
+        let mut is_nodiscard = false;
         loop {
             if self.is_keyword(Keyword::Public) {
                 self.bump();
@@ -524,6 +525,9 @@ impl Parser {
             } else if self.is_keyword(Keyword::Final) {
                 self.bump();
                 is_final = true;
+            } else if self.is_keyword(Keyword::Nodiscard) {
+                self.bump();
+                is_nodiscard = true;
             } else {
                 break;
             }
@@ -545,6 +549,7 @@ impl Parser {
                 is_const: false,
                 is_abstract: false,
                 is_final: false,
+                is_nodiscard: false,
                 return_type: Type::Void,
                 params,
                 throws,
@@ -567,6 +572,7 @@ impl Parser {
                 is_const: false,
                 is_abstract: false,
                 is_final: false,
+                is_nodiscard: false,
                 return_type: Type::Void,
                 params: Vec::new(),
                 throws: Vec::new(),
@@ -608,6 +614,7 @@ impl Parser {
                 is_const,
                 is_abstract,
                 is_final,
+                is_nodiscard,
                 return_type: ty,
                 params,
                 throws,
@@ -1971,6 +1978,7 @@ fn enum_from_method(
         is_const: false,
         is_abstract: false,
         is_final: false,
+        is_nodiscard: false,
         return_type,
         params: vec![Param {
             name: "value".to_string(),

@@ -9,7 +9,7 @@ use std::collections::{HashMap, HashSet};
 
 use nl_syntax::ast::{SourceFile, SourceItem, Type, Visibility};
 
-pub use error::{LocatedError, SemaError};
+pub use error::{LocatedError, LocatedWarning, SemaError, SemaWarning};
 
 fn decl_line_of(file: &SourceFile) -> u32 {
     match &file.item {
@@ -27,6 +27,16 @@ fn decl_line_of(file: &SourceFile) -> u32 {
 /// an unresolved class/field/method defers to nl-codegen's harder error,
 /// same as unresolved calls already did before this phase.
 pub fn check_compile(files: &[SourceFile]) -> Result<(), LocatedError> {
+    check_compile_with_warnings(files).map(|_| ())
+}
+
+/// Same checks as `check_compile`, but also returns every non-fatal
+/// diagnostic collected along the way (currently just W001 — compiler.md §
+/// Warnings, specs.md § Nodiscard) instead of discarding them. Warnings never
+/// turn a successful compile into an `Err`.
+pub fn check_compile_with_warnings(
+    files: &[SourceFile],
+) -> Result<Vec<LocatedWarning>, LocatedError> {
     // Built-in exception classes (nl_syntax::prelude) are implicitly part of
     // every program — see class_table::import_map, which seeds their simple
     // names so user code can reference them without a `use`. Prepended
@@ -54,10 +64,11 @@ pub fn check_compile(files: &[SourceFile]) -> Result<(), LocatedError> {
     // the expanded program) still has everything needed to resolve whether a
     // concrete type argument satisfies its bound.
     check_template_bounds(files, &classes)?;
+    let mut warnings = Vec::new();
     for file in &all_files {
-        checker::check_source_file(file, &all_files, &classes)?;
+        warnings.extend(checker::check_source_file(file, &all_files, &classes)?);
     }
-    Ok(())
+    Ok(warnings)
 }
 
 /// compiler.md § Template instantiation, "Bounded type parameters" — E037.

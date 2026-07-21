@@ -26,20 +26,35 @@ pub fn run_test(test: &TestFile) -> Outcome {
         return Outcome::Fail("expected a parse error but parsing succeeded".to_string());
     }
 
-    if let Err(e) = nl_sema::check_compile(&files) {
-        return match &test.header.expected_compile_error {
-            Some(code) if code == e.code() => Outcome::Pass,
-            Some(code) => Outcome::Fail(format!(
-                "expected compile error {code}, got {} ({e})",
-                e.code()
-            )),
-            None => Outcome::Fail(format!("unexpected compile error: {e}")),
-        };
-    }
+    let warnings = match nl_sema::check_compile_with_warnings(&files) {
+        Ok(warnings) => warnings,
+        Err(e) => {
+            return match &test.header.expected_compile_error {
+                Some(code) if code == e.code() => Outcome::Pass,
+                Some(code) => Outcome::Fail(format!(
+                    "expected compile error {code}, got {} ({e})",
+                    e.code()
+                )),
+                None => Outcome::Fail(format!("unexpected compile error: {e}")),
+            };
+        }
+    };
     if let Some(code) = &test.header.expected_compile_error {
         return Outcome::Fail(format!(
             "expected compile error {code} but compilation succeeded"
         ));
+    }
+    if let Some(code) = &test.header.expected_warning {
+        if !warnings.iter().any(|w| w.code() == code) {
+            return Outcome::Fail(format!(
+                "expected warning {code} but it was not reported (got: [{}])",
+                warnings
+                    .iter()
+                    .map(|w| w.code())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ));
+        }
     }
 
     let modules = match nl_codegen::compile_program(&files) {

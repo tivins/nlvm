@@ -1,0 +1,30 @@
+---
+title: "Nodiscard — a `nodiscard` method parses and runs normally when its return value is used (specs.md § Nodiscard)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "20"
+---
+
+#NLFILE phase9/nodiscard_used/Calculator.nl
+namespace phase9.nodiscard_used;
+
+class Calculator
+{
+    public construct() {}
+
+    public nodiscard int computeValue(int input) {
+        return input * 2;
+    }
+}
+
+#NLFILE phase9/nodiscard_used/Main.nl
+namespace phase9.nodiscard_used;
+
+class Main {
+    public static int main(string[] args) {
+        Calculator calc = new Calculator();
+        int value = calc.computeValue(10);
+        system.Out.print(value);
+        return 0;
+    }
+}

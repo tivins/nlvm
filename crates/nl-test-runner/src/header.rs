@@ -16,6 +16,12 @@ pub struct Header {
     /// declaration in one file), as opposed to `expected_compile_error` which
     /// covers `nl-sema`'s E-code diagnostics on an AST that parsed fine.
     pub expected_parse_error: Option<bool>,
+    /// nlvm-internal extension, not part of nlvm-specs/docs/tests.md (same
+    /// spirit as `expected_parse_error`): expects `nl_sema::check_compile`
+    /// to succeed but report the given warning code (e.g. `W001`) somewhere
+    /// among its diagnostics. Compilation must still succeed — a warning
+    /// never fails the build (compiler.md § Warnings).
+    pub expected_warning: Option<String>,
     pub expected_class: Option<String>,
     pub expected_methods: Option<Vec<String>>,
     pub expected_fields: Option<Vec<serde_yaml::Value>>,
