@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*.*.*+*"
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-14
+            target: aarch64-apple-darwin
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      - name: Build nlc + nlvm
+        run: cargo build -r --locked --target ${{ matrix.target }} -p nlc -p nlvm
+
+      - name: Package
+        run: |
+          pkg=nlvm-${{ github.ref_name }}-${{ matrix.target }}
+          mkdir "$pkg"
+          cp target/${{ matrix.target }}/release/nlc "$pkg/"
+          cp target/${{ matrix.target }}/release/nlvm "$pkg/"
+          cp README.md LICENSE "$pkg/"
+          tar czf "$pkg.tar.gz" "$pkg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nlvm-${{ matrix.target }}
+          path: nlvm-*.tar.gz
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz
+          generate_release_notes: true
