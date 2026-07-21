@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.9]
+
+### Added
+- GitHub Actions workflow (`release.yml`) that builds `nlc`/`nlvm` release binaries for Linux and macOS (Intel + Apple Silicon) and publishes them as a GitHub Release on version tags, laying the groundwork for a one-line install script.
+
+### Changed
+- Project moved to the `nlvm-lang` GitHub organization; README and VS Code extension links updated accordingly. The documentation site moved to its own `nlvm.dev` repository.
+
 ## [0.5.8]
 
 ### Fixed
