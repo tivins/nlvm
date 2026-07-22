@@ -8,6 +8,7 @@ pub fn parse_source_file(src: &str, path: impl Into<String>) -> Result<SourceFil
         tokens,
         pos: 0,
         path: path.into(),
+        current_class: None,
     };
     p.parse_source_file()
 }
@@ -16,6 +17,14 @@ struct Parser {
     tokens: Vec<Token>,
     pos: usize,
     path: String,
+    /// Simple name of the class/enum currently being parsed — used to
+    /// resolve the `type`/`Self` contextual keywords (specs.md § Self and
+    /// type keywords) straight to `Type::Named(current_class)` at parse
+    /// time, rather than carrying a dedicated AST variant through
+    /// `resolve_type`/monomorphization/codegen. `None` outside a class body
+    /// (a .nl file holds at most one class/interface/enum, so this is only
+    /// ever set once per file and never needs to be restored).
+    current_class: Option<String>,
 }
 
 impl Parser {
@@ -288,6 +297,7 @@ impl Parser {
             false
         };
         let name = self.eat_ident()?;
+        self.current_class = Some(name.clone());
 
         let extends = if self.is_keyword(Keyword::Extends) {
             self.bump();
@@ -343,6 +353,7 @@ impl Parser {
         let decl_line = self.line();
         self.eat_keyword(Keyword::Enum)?;
         let name = self.eat_ident()?;
+        self.current_class = Some(name.clone());
 
         let backing_ty = if self.is_punct(Punct::Colon) {
             self.bump();
@@ -583,7 +594,18 @@ impl Parser {
         }
 
         let ty = self.parse_type()?;
-        let name = self.eat_ident()?;
+        // `operator+`, `operator+=`, `operator<=>`, `operator++`, ... —
+        // specs.md § Operator Overloading. The method's canonical `name`
+        // becomes the literal source text (`"operator+"`, `"operator+="`,
+        // ...); unary vs. binary forms that share a symbol (`-`, `!` is
+        // always unary) are disambiguated later by `params.len()`, exactly
+        // like every other overload in this codebase (arity-based).
+        let name = if self.is_keyword(Keyword::Operator) {
+            self.bump();
+            self.parse_operator_symbol()?
+        } else {
+            self.eat_ident()?
+        };
         if self.is_punct(Punct::LParen) {
             self.bump();
             let params = self.parse_params()?;
@@ -640,6 +662,53 @@ impl Parser {
             });
         }
         Ok(())
+    }
+
+    /// The operator symbol right after the `operator` keyword in an
+    /// `operator+`-style method name — specs.md § Overloadable operators.
+    /// Returns the canonical `"operator" + symbol` method name (e.g.
+    /// `"operator+="`). `[]` (subscript) is explicitly not overloadable per
+    /// specs.md (reserved to arrays/native collections), so it gets its own
+    /// clearer error instead of falling into the generic "unsupported"
+    /// message.
+    fn parse_operator_symbol(&mut self) -> Result<String, SyntaxError> {
+        if self.is_punct(Punct::LBracket) {
+            return Err(SyntaxError::Parse(
+                "operator '[]' cannot be overloaded (reserved to arrays and native collections)"
+                    .to_string(),
+                self.line(),
+                self.col(),
+            ));
+        }
+        let symbol = match &self.peek().kind {
+            TokenKind::Punct(Punct::Plus) => "+",
+            TokenKind::Punct(Punct::Minus) => "-",
+            TokenKind::Punct(Punct::Star) => "*",
+            TokenKind::Punct(Punct::Slash) => "/",
+            TokenKind::Punct(Punct::Percent) => "%",
+            TokenKind::Punct(Punct::PlusEq) => "+=",
+            TokenKind::Punct(Punct::MinusEq) => "-=",
+            TokenKind::Punct(Punct::StarEq) => "*=",
+            TokenKind::Punct(Punct::SlashEq) => "/=",
+            TokenKind::Punct(Punct::PercentEq) => "%=",
+            TokenKind::Punct(Punct::Lt) => "<",
+            TokenKind::Punct(Punct::Gt) => ">",
+            TokenKind::Punct(Punct::Le) => "<=",
+            TokenKind::Punct(Punct::Ge) => ">=",
+            TokenKind::Punct(Punct::Spaceship) => "<=>",
+            TokenKind::Punct(Punct::Not) => "!",
+            TokenKind::Punct(Punct::PlusPlus) => "++",
+            TokenKind::Punct(Punct::MinusMinus) => "--",
+            other => {
+                return Err(SyntaxError::Parse(
+                    format!("'{other:?}' is not an overloadable operator"),
+                    self.line(),
+                    self.col(),
+                ))
+            }
+        };
+        self.bump();
+        Ok(format!("operator{symbol}"))
     }
 
     fn parse_params(&mut self) -> Result<Vec<Param>, SyntaxError> {
@@ -764,6 +833,27 @@ impl Parser {
                 self.bump();
                 Type::NullT
             }
+            // `type`/`Self` — specs.md § Self and type keywords. Resolved
+            // straight to the enclosing class here (rather than carrying a
+            // dedicated `Type` variant through the rest of the pipeline):
+            // `resolve_type`'s simple-name-to-FQCN map (nl-sema/nl-codegen's
+            // `class_table::import_map`) already maps a class's own simple
+            // name to its own FQCN, so `Type::Named(current_class)` resolves
+            // correctly with no further plumbing. Only meaningful inside a
+            // class/enum body (`current_class` is `None` at top level and
+            // inside an interface body, where full `Self` covariance is not
+            // supported yet).
+            TokenKind::Keyword(Keyword::TypeKw) | TokenKind::Keyword(Keyword::SelfType) => {
+                let Some(class_name) = self.current_class.clone() else {
+                    return Err(SyntaxError::Parse(
+                        "'type'/'Self' can only be used inside a class body".to_string(),
+                        self.line(),
+                        self.col(),
+                    ));
+                };
+                self.bump();
+                Type::Named(class_name)
+            }
             // `(Type, Type, ...) => ReturnType [throws Name, ...]` —
             // specs.md § Function type assignment. Unambiguous here: `(`
             // never starts any other type-atom form, so no lookahead is
@@ -845,6 +935,21 @@ impl Parser {
     /// used after `new` where `[` introduces an array-size expression, not
     /// an empty array-type suffix.
     fn parse_new_base_type(&mut self) -> Result<Type, SyntaxError> {
+        // `new type(...)` — specs.md § Self and type keywords: "used ...
+        // when instantiating (`new type(...)`)". `new Self(...)` is not
+        // part of the grammar (`Self` denotes the mutate-and-return-`this`
+        // meaning, never construction).
+        if self.is_keyword(Keyword::TypeKw) {
+            let Some(class_name) = self.current_class.clone() else {
+                return Err(SyntaxError::Parse(
+                    "'type' can only be used inside a class body".to_string(),
+                    self.line(),
+                    self.col(),
+                ));
+            };
+            self.bump();
+            return Ok(Type::Named(class_name));
+        }
         match &self.peek().kind {
             TokenKind::Ident(name) => match name.as_str() {
                 "int" => {

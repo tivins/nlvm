@@ -1,0 +1,29 @@
+---
+title: "Compile E009 — `Box` overloads `operator+` for `Box` only; `box + 1` (int) does not match and is not a built-in numeric operator either"
+file_separator: "#NLFILE"
+expected_compile_error: "E009"
+---
+
+#NLFILE phase9/operatorwrongtypeoverload/Box.nl
+namespace phase9.operatorwrongtypeoverload;
+class Box {
+	public int value;
+
+	public construct(int value) {
+		this.value = value;
+	}
+
+	public type operator+(const Box other) const {
+		return new type(this.value + other.value);
+	}
+}
+
+#NLFILE phase9/operatorwrongtypeoverload/Main.nl
+namespace phase9.operatorwrongtypeoverload;
+class Main {
+	public static int main(string[] args) {
+		auto a = new Box(1);
+		int y = a + 1;
+		return y;
+	}
+}

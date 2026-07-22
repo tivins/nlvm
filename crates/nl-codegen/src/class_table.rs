@@ -386,6 +386,34 @@ pub fn find_method<'c>(
     }
 }
 
+/// Like `find_method`, but for operator overloads (specs.md § Operator
+/// Overloading): matches `name` (an `operator<sym>` canonical name — see
+/// `nl_syntax::parser::parse_operator_symbol`) against an *exact* parameter
+/// type list rather than arity alone, so e.g. `Vector2` can overload
+/// `operator+` once for `Vector2` and once for `int` without either call
+/// site becoming ambiguous — mirrors `nl_sema::class_table::find_operator_method`.
+/// Static methods are skipped (operator overloads are instance methods
+/// only).
+pub fn find_operator_method<'c>(
+    classes: &'c HashMap<String, ClassInfo>,
+    fqcn: &str,
+    name: &str,
+    params: &[Type],
+) -> Option<&'c MethodInfo> {
+    let mut current = fqcn;
+    loop {
+        let info = classes.get(current)?;
+        if let Some(m) = info
+            .methods
+            .iter()
+            .find(|m| m.name == name && !m.is_static && m.params == params)
+        {
+            return Some(m);
+        }
+        current = info.extends.as_deref()?;
+    }
+}
+
 /// Like `find_method`, for fields.
 pub fn find_field<'c>(
     classes: &'c HashMap<String, ClassInfo>,

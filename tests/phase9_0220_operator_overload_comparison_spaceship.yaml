@@ -1,0 +1,48 @@
+---
+title: "Operator overloading — comparison operators (`<`, `>`) each overloaded independently returning bool, and `<=>` returning int (negative/0/positive)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "true false -2 0"
+---
+
+#NLFILE phase9/operatorcomparisonoverload/Box.nl
+namespace phase9.operatorcomparisonoverload;
+class Box {
+	public int value;
+
+	public construct(int value) {
+		this.value = value;
+	}
+
+	public bool operator<(const Box other) const {
+		return this.value < other.value;
+	}
+
+	public bool operator>(const Box other) const {
+		return this.value > other.value;
+	}
+
+	// Three-way comparison — specs.md § Operator Overloading: returns
+	// negative/0/positive, never the operand type itself, and does not
+	// implicitly derive `<`/`>` (both are overloaded separately above).
+	public int operator<=>(const Box other) const {
+		return this.value - other.value;
+	}
+}
+
+#NLFILE phase9/operatorcomparisonoverload/Main.nl
+namespace phase9.operatorcomparisonoverload;
+class Main {
+	public static int main(string[] args) {
+		auto a = new Box(3);
+		auto b = new Box(5);
+		system.Out.print(a < b);
+		system.Out.print(" ");
+		system.Out.print(a > b);
+		system.Out.print(" ");
+		system.Out.print(a <=> b);
+		system.Out.print(" ");
+		system.Out.print(a <=> a);
+		return 0;
+	}
+}

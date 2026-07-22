@@ -3,7 +3,9 @@ use std::collections::{HashMap, HashSet};
 use nl_bytecode::{ConstantPool, Opcode};
 use nl_syntax::ast::{Arg, BinOp, Expr, LValue, Type, UnOp};
 
-use crate::class_table::{find_ctor, find_field, find_method, resolve_type, ClassInfo, MethodInfo};
+use crate::class_table::{
+    find_ctor, find_field, find_method, find_operator_method, resolve_type, ClassInfo, MethodInfo,
+};
 use crate::error::CodegenError;
 use crate::type_desc::{method_descriptor, type_descriptor};
 
@@ -1282,6 +1284,55 @@ impl<'a> Emitter<'a> {
         match target {
             LValue::Local(name) => match self.resolve_ident(name)? {
                 IdentRef::Local(slot) => {
+                    // Compound assignment operator overloading — specs.md §
+                    // Overloadable operators: `+=`/`-=`/`*=`/`/=`/`%=`
+                    // desugar at parse time to `Assign(Local(name),
+                    // Binary(op, Ident(name), rhs))` (see
+                    // `nl_syntax::parser::parse_assignment`); when `name`'s
+                    // declared type is a user class defining the matching
+                    // `operator<op>=`, dispatch to it directly (mutates
+                    // `this` in place and returns `Self`) instead of
+                    // falling into the generic path below, which would
+                    // otherwise compile the same `Binary` and land on
+                    // `operator<op>` (create-new) via `compile_binary`
+                    // instead — mirrors `nl_sema::checker::check_assign`'s
+                    // identical preference. Skipped for a boxed (`ref`
+                    // parameter) slot — not exercised, falls through to the
+                    // generic path below like any other unsupported shape.
+                    if slot.boxed.is_none() {
+                        if let Expr::Binary(op, inner, rhs) = value {
+                            if matches!(&**inner, Expr::Ident(inner_name) if inner_name == name) {
+                                if let ExprTy::Object(fqcn) = &slot.ty {
+                                    if let Some(method_name) = compound_operator_method_name(*op) {
+                                        if let Some(rhs_ty) = self.peek_type(rhs) {
+                                            let rhs_ast_ty = expr_ty_to_type(&rhs_ty);
+                                            if let Some(method) = find_operator_method(
+                                                self.classes,
+                                                fqcn,
+                                                method_name,
+                                                std::slice::from_ref(&rhs_ast_ty),
+                                            ) {
+                                                let return_ty = method.return_ty.clone();
+                                                let fqcn = fqcn.clone();
+                                                self.op_u16(Opcode::Load, slot.index, 1);
+                                                self.compile_expr(rhs)?;
+                                                let result_ty = self.emit_operator_call(
+                                                    &fqcn,
+                                                    method_name,
+                                                    std::slice::from_ref(&rhs_ast_ty),
+                                                    &return_ty,
+                                                );
+                                                self.op(Opcode::Dup, 1);
+                                                self.op_u16(Opcode::Store, slot.index, -1);
+                                                return Ok(result_ty);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     let value_ty = self.compile_expr(value)?;
                     // vm.md § Ref parameters (boxing) — writing to a `ref`
                     // parameter writes through `Box<T>.value`, not the
@@ -1438,6 +1489,35 @@ impl<'a> Emitter<'a> {
                 )))
             }
         };
+        // Overloaded `++`/`--` — specs.md § Overloadable operators: the
+        // prefix and postfix forms invoke the *same* `operator++`/
+        // `operator--` method (no separate prefix form exists in this
+        // grammar — only postfix, `Expr::PostIncr`/`PostDecr`), which
+        // mutates `this` and returns `Self`. Matches vm.md § Object
+        // operations, "Overloaded `++`/`--`": "the compiler emits
+        // `INVOKE_INSTANCE`". Like the plain-`int` case just below, this
+        // returns `ExprTy::Void` (no expression value) rather than the
+        // spec's "postfix evaluates to the mutated reference" — consistent
+        // with this codebase's existing postfix support, which is
+        // statement-only in the same way (no `LOAD` before the mutation to
+        // preserve an original value either). Skipped for a boxed (`ref`
+        // parameter) slot, like the plain-`int` case — not exercised.
+        if let ExprTy::Object(fqcn) = &slot.ty {
+            let method_name = if delta > 0 { "operator++" } else { "operator--" };
+            if slot.boxed.is_none() {
+                if let Some(method) = find_operator_method(self.classes, fqcn, method_name, &[]) {
+                    let return_ty = method.return_ty.clone();
+                    let fqcn = fqcn.clone();
+                    self.op_u16(Opcode::Load, slot.index, 1);
+                    let _ = self.emit_operator_call(&fqcn, method_name, &[], &return_ty);
+                    self.op_u16(Opcode::Store, slot.index, -1);
+                    return Ok(ExprTy::Void);
+                }
+            }
+            return Err(CodegenError::Unsupported(format!(
+                "'++'/'--' on '{fqcn}' requires an '{method_name}' overload"
+            )));
+        }
         if slot.ty != ExprTy::Int {
             return Err(CodegenError::Unsupported(format!(
                 "'++'/'--' only supported on int, found {:?}",
@@ -2536,8 +2616,51 @@ impl<'a> Emitter<'a> {
         }
     }
 
+    /// One `INVOKE_INSTANCE` against a user-class operator-overload receiver
+    /// already on the stack (specs.md § Operator Overloading), with
+    /// `params.len()` argument(s) already compiled/coerced on top of it (0
+    /// for unary/`operator++`/`operator--`, 1 for binary/compound
+    /// assignment) — same bytecode shape as `compile_method_call`'s
+    /// user-class branch, trimmed to what a resolved operator call already
+    /// knows statically (no named/optional/`ref` arguments, no enum
+    /// receiver — operators aren't overloadable on those).
+    fn emit_operator_call(
+        &mut self,
+        fqcn: &str,
+        method_name: &str,
+        params: &[Type],
+        return_ty: &Type,
+    ) -> ExprTy {
+        let descriptor = method_descriptor(params, return_ty);
+        let name_index = self.cp.add_utf8(method_name.to_string());
+        let descriptor_index = self.cp.add_type_desc(&descriptor);
+        let class_index = self.cp.add_class(fqcn);
+        let method_ref = self
+            .cp
+            .add_method_ref(class_index, name_index, descriptor_index);
+        let return_expr_ty = expr_ty_of(return_ty);
+        let result_delta = if return_expr_ty == ExprTy::Void { 0 } else { 1 };
+        self.op_u16(
+            Opcode::InvokeInstance,
+            method_ref,
+            result_delta - params.len() as i32 - 1,
+        );
+        return_expr_ty
+    }
+
     fn compile_unary(&mut self, op: UnOp, inner: &Expr) -> Result<ExprTy, CodegenError> {
         let ty = self.compile_expr(inner)?;
+        if let ExprTy::Object(fqcn) = &ty {
+            let method_name = match op {
+                UnOp::Neg => "operator-",
+                UnOp::Not => "operator!",
+            };
+            if let Some(method) = find_operator_method(self.classes, fqcn, method_name, &[]) {
+                let return_ty = method.return_ty.clone();
+                let fqcn = fqcn.clone();
+                return Ok(self.emit_operator_call(&fqcn, method_name, &[], &return_ty));
+            }
+        }
         match op {
             UnOp::Neg => match ty {
                 ExprTy::Int => {
@@ -2570,6 +2693,40 @@ impl<'a> Emitter<'a> {
             BinOp::And => return self.compile_short_circuit(true, lhs, rhs),
             BinOp::Or => return self.compile_short_circuit(false, lhs, rhs),
             _ => {}
+        }
+
+        // Operator overloading — specs.md § Operator Overloading. Peeked
+        // (rather than compiled first) so this can be tried before
+        // compiling either side; `peek_type` is best-effort (see its doc
+        // comment) so a receiver shape it doesn't cover (e.g. `new
+        // Vector2(...) + p2`) falls through to the ordinary numeric path
+        // below and its usual "unsupported" error — a known limitation,
+        // consistent with the rest of this best-effort resolver. nl-sema
+        // has already validated the overload exists when this reaches
+        // codegen, but codegen keeps its own independent lookup (same
+        // division of labor as every other call site here).
+        if let Some(op_method) = operator_method_name(op) {
+            if let (Some(ExprTy::Object(fqcn)), Some(rhs_ty)) =
+                (self.peek_type(lhs), self.peek_type(rhs))
+            {
+                let rhs_ast_ty = expr_ty_to_type(&rhs_ty);
+                if let Some(method) = find_operator_method(
+                    self.classes,
+                    &fqcn,
+                    op_method,
+                    std::slice::from_ref(&rhs_ast_ty),
+                ) {
+                    let return_ty = method.return_ty.clone();
+                    self.compile_expr(lhs)?;
+                    self.compile_expr(rhs)?;
+                    return Ok(self.emit_operator_call(
+                        &fqcn,
+                        op_method,
+                        std::slice::from_ref(&rhs_ast_ty),
+                        &return_ty,
+                    ));
+                }
+            }
         }
 
         // String concatenation: '+' where either side is a string.
@@ -2759,10 +2916,47 @@ impl<'a> Emitter<'a> {
                 IdentRef::Local(slot) => Some(slot.ty),
                 IdentRef::CapturedField(field) => Some(field.ty),
             },
-            Expr::Binary(BinOp::Add, l, r) => match (self.peek_type(l), self.peek_type(r)) {
-                (Some(ExprTy::StringT), _) | (_, Some(ExprTy::StringT)) => Some(ExprTy::StringT),
-                _ => None,
-            },
+            // Operator overloading — needed so a chained/nested overloaded
+            // expression (`p1 + p2 + 1`, parsed as `Binary(Add,
+            // Binary(Add, p1, p2), 1)`) still peeks as `Object` at the
+            // outer level: `compile_binary`'s own operator-overload check
+            // peeks `lhs` *before* compiling anything, so without this the
+            // inner `p1 + p2` (itself dispatched to `operator+` only once
+            // actually compiled) would be invisible here and the outer `+
+            // 1` would wrongly fall through to the built-in numeric path.
+            Expr::Binary(op, l, r) => {
+                if let Some(op_method) = operator_method_name(*op) {
+                    if let (Some(ExprTy::Object(fqcn)), Some(rhs_ty)) =
+                        (self.peek_type(l), self.peek_type(r))
+                    {
+                        let rhs_ast_ty = expr_ty_to_type(&rhs_ty);
+                        if let Some(method) = find_operator_method(
+                            self.classes,
+                            &fqcn,
+                            op_method,
+                            std::slice::from_ref(&rhs_ast_ty),
+                        ) {
+                            return Some(expr_ty_of(&method.return_ty));
+                        }
+                    }
+                }
+                if *op == BinOp::Add {
+                    match (self.peek_type(l), self.peek_type(r)) {
+                        (Some(ExprTy::StringT), _) | (_, Some(ExprTy::StringT)) => {
+                            return Some(ExprTy::StringT)
+                        }
+                        _ => {}
+                    }
+                }
+                None
+            }
+            // `new ClassName(...)` — needed so operator overloading (see
+            // `compile_binary`'s doc comment) recognizes a fresh instance
+            // as an operand without compiling it, e.g. `p3 += new
+            // Vector2(2, 3)` or `p1 + new Vector2(1, 1)`.
+            Expr::New(class_name, _type_args, _args) => {
+                Some(ExprTy::Object(self.resolve_class_name(class_name)))
+            }
             // `obj.field` — resolved the same way `compile_field_access`
             // resolves it, but purely (no bytecode emitted): peek the
             // receiver's static class, then reuse the same three lookup
@@ -2799,6 +2993,39 @@ fn dotted_path(expr: &Expr) -> Option<String> {
     match expr {
         Expr::Ident(name) => Some(name.clone()),
         Expr::FieldAccess(base, name) => Some(format!("{}.{name}", dotted_path(base)?)),
+        _ => None,
+    }
+}
+
+/// Canonical `operator<sym>` method name for `op` — specs.md § Overloadable
+/// operators. `None` for the non-overloadable ops (`==`/`!=`/`&&`/`||`) —
+/// mirrors `nl_sema::checker`'s copy.
+fn operator_method_name(op: BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("operator+"),
+        BinOp::Sub => Some("operator-"),
+        BinOp::Mul => Some("operator*"),
+        BinOp::Div => Some("operator/"),
+        BinOp::Mod => Some("operator%"),
+        BinOp::Lt => Some("operator<"),
+        BinOp::Gt => Some("operator>"),
+        BinOp::Le => Some("operator<="),
+        BinOp::Ge => Some("operator>="),
+        BinOp::Cmp3 => Some("operator<=>"),
+        BinOp::Eq | BinOp::Ne | BinOp::And | BinOp::Or => None,
+    }
+}
+
+/// Canonical `operator<sym>=` compound-assignment method name for `op` —
+/// specs.md § Overloadable operators (`+= -= *= /= %=`) — mirrors
+/// `nl_sema::checker`'s copy.
+fn compound_operator_method_name(op: BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("operator+="),
+        BinOp::Sub => Some("operator-="),
+        BinOp::Mul => Some("operator*="),
+        BinOp::Div => Some("operator/="),
+        BinOp::Mod => Some("operator%="),
         _ => None,
     }
 }

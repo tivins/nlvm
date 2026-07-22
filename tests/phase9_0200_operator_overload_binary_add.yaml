@@ -1,0 +1,49 @@
+---
+title: "Operator overloading — binary `operator+`, two overloads (Vector2 and int) resolved by exact parameter type, `type`/`new type(...)`, left-to-right chaining"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "5 7"
+---
+
+#NLFILE phase9/operatoraddoverload/Vector2.nl
+namespace phase9.operatoraddoverload;
+class Vector2 {
+	public int x;
+	public int y;
+
+	public construct() {
+		this.x = 0;
+		this.y = 0;
+	}
+
+	public construct(int x, int y) {
+		this.x = x;
+		this.y = y;
+	}
+
+	// Binary operator: returns a new instance of the enclosing class —
+	// specs.md § Operator Overloading.
+	public type operator+(const Vector2 vec) const {
+		return new type(this.x + vec.x, this.y + vec.y);
+	}
+
+	// Same operator, overloaded for a different parameter type — resolved
+	// by exact parameter type, not just arity.
+	public type operator+(const int scalar) const {
+		return new type(this.x + scalar, this.y + scalar);
+	}
+}
+
+#NLFILE phase9/operatoraddoverload/Main.nl
+namespace phase9.operatoraddoverload;
+class Main {
+	public static int main(string[] args) {
+		auto p1 = new Vector2(1, 2);
+		auto p2 = new Vector2(3, 4);
+		auto p3 = p1 + p2 + 1;
+		system.Out.print(p3.x);
+		system.Out.print(" ");
+		system.Out.print(p3.y);
+		return 0;
+	}
+}

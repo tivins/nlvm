@@ -1,0 +1,32 @@
+---
+title: "`Self` return type on an ordinary fluent method (not an operator overload) — specs.md § Self and type keywords: 'mutates the current instance and returns it'"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "test"
+---
+
+#NLFILE phase9/selftypekeyword/Builder.nl
+namespace phase9.selftypekeyword;
+class Builder {
+	public string name;
+
+	public construct() {
+		this.name = "";
+	}
+
+	public Self withName(string name) {
+		this.name = name;
+		return this;
+	}
+}
+
+#NLFILE phase9/selftypekeyword/Main.nl
+namespace phase9.selftypekeyword;
+class Main {
+	public static int main(string[] args) {
+		auto b = new Builder();
+		auto b2 = b.withName("test");
+		system.Out.print(b2.name);
+		return 0;
+	}
+}

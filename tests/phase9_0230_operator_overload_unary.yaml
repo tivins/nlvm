@@ -1,0 +1,48 @@
+---
+title: "Operator overloading — unary `operator-` (returns a new negated instance) and unary `operator!` (logical negation, returns bool)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "-5 false"
+---
+
+#NLFILE phase9/operatorunaryoverload/Money.nl
+namespace phase9.operatorunaryoverload;
+class Money {
+	public int cents;
+
+	public construct(int cents) {
+		this.cents = cents;
+	}
+
+	public type operator-() const {
+		return new type(-this.cents);
+	}
+}
+
+#NLFILE phase9/operatorunaryoverload/Flag.nl
+namespace phase9.operatorunaryoverload;
+class Flag {
+	public bool value;
+
+	public construct(bool value) {
+		this.value = value;
+	}
+
+	public bool operator!() const {
+		return !this.value;
+	}
+}
+
+#NLFILE phase9/operatorunaryoverload/Main.nl
+namespace phase9.operatorunaryoverload;
+class Main {
+	public static int main(string[] args) {
+		auto m = new Money(5);
+		auto neg = -m;
+		system.Out.print(neg.cents);
+		system.Out.print(" ");
+		auto f = new Flag(true);
+		system.Out.print(!f);
+		return 0;
+	}
+}

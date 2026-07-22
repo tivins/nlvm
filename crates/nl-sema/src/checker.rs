@@ -2070,6 +2070,18 @@ impl<'a> MethodChecker<'a> {
             }
             Expr::Unary(op, inner) => {
                 let ty = self.check_expr(inner, assigned)?;
+                // Operator overloading — specs.md § Overloadable operators:
+                // unary `-`/`!` overloads take no parameters (`public type
+                // operator-() const` / `public bool operator!() const`).
+                if let Type::Named(fqcn) = &ty {
+                    let method_name = match op {
+                        UnOp::Neg => "operator-",
+                        UnOp::Not => "operator!",
+                    };
+                    if let Some(return_ty) = self.resolve_operator_call(fqcn, method_name, &[])? {
+                        return Ok(return_ty);
+                    }
+                }
                 match op {
                     UnOp::Neg if types::is_numeric(&ty) => Ok(ty),
                     UnOp::Neg => Err(SemaError::BadUnaryOperator(
@@ -2306,6 +2318,51 @@ impl<'a> MethodChecker<'a> {
     ) -> Result<Type, SemaError> {
         match target {
             LValue::Local(name) => {
+                // Compound assignment (`+=`, `-=`, `*=`, `/=`, `%=`)
+                // desugars at parse time (`parser::parse_assignment`) to
+                // `Assign(Local(name), Binary(op, Ident(name), rhs))`.
+                // specs.md § Overloadable operators gives compound
+                // assignment its own `operator<op>=` method — mutates
+                // `this` and returns `Self`, distinct from `operator<op>`
+                // (creates a new instance) — so it's resolved here, before
+                // the generic `check_expr(value)` fallback below ever
+                // looks for `operator<op>` instead. A class with only
+                // `operator+=` (no `operator+`) still works this way; a
+                // class with only `operator+` falls through to the
+                // fallback and gets rebind-via-`operator+` semantics
+                // instead (documented limitation — see `check_binary`).
+                if let Expr::Binary(op, inner, rhs) = value {
+                    if matches!(&**inner, Expr::Ident(inner_name) if inner_name == name) {
+                        if let Some((id, declared_ty)) = self.resolve(name) {
+                            if let Type::Named(fqcn) = &declared_ty {
+                                if let Some(method_name) = compound_operator_method_name(*op) {
+                                    let rhs_ty = self.check_expr(rhs, assigned)?;
+                                    if self
+                                        .resolve_operator_call(
+                                            fqcn,
+                                            method_name,
+                                            std::slice::from_ref(&rhs_ty),
+                                        )?
+                                        .is_some()
+                                    {
+                                        if self.readonly_loop_vars.contains(&id) {
+                                            return Err(SemaError::ConstLoopVariableModification(
+                                                name.clone(),
+                                            ));
+                                        }
+                                        if self.const_vars.contains(&id) {
+                                            return Err(SemaError::ConstModification(name.clone()));
+                                        }
+                                        assigned.insert(id);
+                                        self.narrowed.remove(&id);
+                                        return Ok(declared_ty);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 let value_ty = self.check_expr(value, assigned)?;
                 let Some((id, declared_ty)) = self.resolve(name) else {
                     return Ok(value_ty);
@@ -2363,6 +2420,32 @@ impl<'a> MethodChecker<'a> {
         }
     }
 
+    /// Looks up `fqcn.<method_name>(param_ty)` (an operator overload — see
+    /// `class_table::find_operator_method`'s exact-type matching) and, if
+    /// found, checks its accessibility from the current class. Returns
+    /// `Ok(None)` when no such overload exists, so callers can fall back to
+    /// their own built-in-type rules (and ultimately E009) unchanged.
+    fn resolve_operator_call(
+        &self,
+        fqcn: &str,
+        method_name: &str,
+        params: &[Type],
+    ) -> Result<Option<Type>, SemaError> {
+        let Some((owner, method)) =
+            class_table::find_operator_method(self.classes, fqcn, method_name, params)
+        else {
+            return Ok(None);
+        };
+        if !class_table::is_accessible(self.classes, method.visibility, &owner, &self.this_fqcn) {
+            return Err(SemaError::MemberNotAccessible(
+                method_name.to_string(),
+                self.this_fqcn.clone(),
+                visibility_str(method.visibility),
+            ));
+        }
+        Ok(Some(method.return_ty.clone()))
+    }
+
     fn check_binary(
         &mut self,
         op: BinOp,
@@ -2396,6 +2479,23 @@ impl<'a> MethodChecker<'a> {
 
         let lty = self.check_expr(lhs, assigned)?;
         let rty = self.check_expr(rhs, assigned)?;
+
+        // Operator overloading — specs.md § Operator Overloading /
+        // compiler.md § Operator type compatibility, rule 1: if the left
+        // operand's type defines `operator<op>` for the right operand's
+        // exact type, that call wins over the built-in numeric/string
+        // fallbacks below. `==`/`!=`/`&&`/`||` are never overloadable
+        // (`operator_method_name` returns `None` for them), so this only
+        // ever fires for `+ - * / % < > <= >= <=>`.
+        if let Type::Named(fqcn) = &lty {
+            if let Some(method_name) = operator_method_name(op) {
+                if let Some(return_ty) =
+                    self.resolve_operator_call(fqcn, method_name, std::slice::from_ref(&rty))?
+                {
+                    return Ok(return_ty);
+                }
+            }
+        }
 
         // String concatenation: '+' where either static type is `string`.
         if op == BinOp::Add && (matches!(lty, Type::StringT) || matches!(rty, Type::StringT)) {
@@ -2629,6 +2729,37 @@ fn visibility_str(v: nl_syntax::ast::Visibility) -> String {
         nl_syntax::ast::Visibility::Public => "public".to_string(),
         nl_syntax::ast::Visibility::Protected => "protected".to_string(),
         nl_syntax::ast::Visibility::Private => "private".to_string(),
+    }
+}
+
+/// Canonical `operator<sym>` method name for `op` — specs.md § Overloadable
+/// operators. `None` for the non-overloadable ops (`==`/`!=`/`&&`/`||`).
+fn operator_method_name(op: BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("operator+"),
+        BinOp::Sub => Some("operator-"),
+        BinOp::Mul => Some("operator*"),
+        BinOp::Div => Some("operator/"),
+        BinOp::Mod => Some("operator%"),
+        BinOp::Lt => Some("operator<"),
+        BinOp::Gt => Some("operator>"),
+        BinOp::Le => Some("operator<="),
+        BinOp::Ge => Some("operator>="),
+        BinOp::Cmp3 => Some("operator<=>"),
+        BinOp::Eq | BinOp::Ne | BinOp::And | BinOp::Or => None,
+    }
+}
+
+/// Canonical `operator<sym>=` compound-assignment method name for `op` —
+/// specs.md § Overloadable operators (`+= -= *= /= %=`).
+fn compound_operator_method_name(op: BinOp) -> Option<&'static str> {
+    match op {
+        BinOp::Add => Some("operator+="),
+        BinOp::Sub => Some("operator-="),
+        BinOp::Mul => Some("operator*="),
+        BinOp::Div => Some("operator/="),
+        BinOp::Mod => Some("operator%="),
+        _ => None,
     }
 }
 

@@ -1,0 +1,39 @@
+---
+title: "Operator overloading — `operator++`/`operator--` mutate `this` and return `Self`; `c++;`/`c--;` on an object-typed local dispatch to them"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "6"
+---
+
+#NLFILE phase9/operatorincroverload/Counter.nl
+namespace phase9.operatorincroverload;
+class Counter {
+	public int value;
+
+	public construct(int value) {
+		this.value = value;
+	}
+
+	public Self operator++() {
+		this.value = this.value + 1;
+		return this;
+	}
+
+	public Self operator--() {
+		this.value = this.value - 1;
+		return this;
+	}
+}
+
+#NLFILE phase9/operatorincroverload/Main.nl
+namespace phase9.operatorincroverload;
+class Main {
+	public static int main(string[] args) {
+		auto c = new Counter(5);
+		c++;
+		c++;
+		c--;
+		system.Out.print(c.value);
+		return 0;
+	}
+}

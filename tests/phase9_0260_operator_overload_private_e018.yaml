@@ -1,0 +1,30 @@
+---
+title: "Compile E018 — a private `operator+` overload is not accessible from an unrelated class, even used through `+` syntax rather than an explicit call"
+file_separator: "#NLFILE"
+expected_compile_error: "E018"
+---
+
+#NLFILE phase9/operatorprivateoverload/Secret.nl
+namespace phase9.operatorprivateoverload;
+class Secret {
+	private int value;
+
+	public construct(int value) {
+		this.value = value;
+	}
+
+	private type operator+(const Secret other) const {
+		return new type(this.value + other.value);
+	}
+}
+
+#NLFILE phase9/operatorprivateoverload/Main.nl
+namespace phase9.operatorprivateoverload;
+class Main {
+	public static int main(string[] args) {
+		auto a = new Secret(1);
+		auto b = new Secret(2);
+		auto c = a + b;
+		return 0;
+	}
+}

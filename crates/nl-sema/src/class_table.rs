@@ -254,6 +254,35 @@ pub fn find_field_owner(
     }
 }
 
+/// Walks `fqcn`'s `extends` chain looking for an instance method named
+/// `name` (an `operator<sym>` canonical name — see
+/// `nl_syntax::parser::parse_operator_symbol`) whose parameters match
+/// `params` *exactly* — specs.md § Operator Overloading resolution needs
+/// exact-type matching (not `find_method_owner`'s arity-only leniency) so
+/// that e.g. `Vector2` can overload `operator+` once for `Vector2` and once
+/// for `int` without either call site becoming ambiguous. Static methods
+/// are skipped (operator overloads are instance methods only, per specs.md
+/// "Rules").
+pub fn find_operator_method<'c>(
+    classes: &'c ClassTable,
+    fqcn: &str,
+    name: &str,
+    params: &[Type],
+) -> Option<(String, &'c MethodInfo)> {
+    let mut current = fqcn;
+    loop {
+        let info = classes.get(current)?;
+        if let Some(m) = info
+            .methods
+            .iter()
+            .find(|m| m.name == name && !m.is_static && m.params == params)
+        {
+            return Some((current.to_string(), m));
+        }
+        current = info.extends.as_deref()?;
+    }
+}
+
 pub fn find_method_owner(
     classes: &ClassTable,
     fqcn: &str,

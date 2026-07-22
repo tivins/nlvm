@@ -5,6 +5,12 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0]
+
+### Added
+- Operator overloading (specs.md § Operator Overloading): classes can now define `operator+ operator- operator* operator/ operator%`, compound assignment (`operator+= operator-= operator*= operator/= operator%=`), comparisons (`operator< operator> operator<= operator>=`), three-way comparison (`operator<=>`), unary `operator-`/`operator!`, and `operator++`/`operator--`. Resolved by exact parameter type, so a class can overload the same operator for several parameter types (e.g. `operator+` for both another instance and `int`) without ambiguity.
+- `type`/`Self` contextual return-type keywords (specs.md § Self and type keywords) inside a class/enum body — `type` for methods that construct and return a new instance of the enclosing class (including `new type(...)`), `Self` for methods that mutate and return `this`. (Not yet supported inside interface bodies — see `Next.md`.)
+
 ## [0.7.1]
 
 ### Fixed
