@@ -1,0 +1,28 @@
+---
+title: "Exception.printStackTrace() writes message then one \"    at \" + file + \":\" + line per stackTrace frame to system.Err"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: ""
+expected_stderr: "bad argument\n    at phase9/printstacktrace/Helper.nl:4\n    at phase9/printstacktrace/Main.nl:5\n"
+---
+
+#NLFILE phase9/printstacktrace/Helper.nl
+namespace phase9.printstacktrace;
+class Helper {
+	public static void boom() {
+		throw new IllegalArgumentException("bad argument");
+	}
+}
+
+#NLFILE phase9/printstacktrace/Main.nl
+namespace phase9.printstacktrace;
+class Main {
+	public static int main(string[] args) {
+		try {
+			Helper.boom();
+		} catch (IllegalArgumentException e) {
+			e.printStackTrace();
+		}
+		return 0;
+	}
+}

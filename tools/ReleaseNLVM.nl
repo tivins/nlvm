@@ -19,8 +19,9 @@ class ReleaseNLVM
             release.pushTag(version);
             system.Out.println("Pushed tag " + version + " to origin.");
         }
-        catch (Exception e) {
-            system.Err.println("Error:\n" + e.message);
+        catch (Exception ex) {
+            system.Err.println("Error:\n" + ex.message);
+            ex.printStackTrace();
             return 1;
         }
         return 0;
@@ -32,6 +33,7 @@ class ReleaseNLVM
             return ReleaseNLVM.run();
         } catch (IOException ex) {
             system.Err.println("Error: " + ex.message);
+            ex.printStackTrace();
             return 1;
         }
     }

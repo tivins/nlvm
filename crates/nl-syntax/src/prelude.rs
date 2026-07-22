@@ -19,7 +19,7 @@
 //! `nl_vm::call_stack` and `interpreter::maybe_capture_stack_trace`.
 
 use crate::ast::{
-    Arg, Block, ClassDecl, Expr, FieldDecl, InterfaceDecl, LValue, MethodDecl, MethodKind,
+    Arg, BinOp, Block, ClassDecl, Expr, FieldDecl, InterfaceDecl, LValue, MethodDecl, MethodKind,
     MethodSig, Param, SourceFile, SourceItem, Stmt, StmtKind, Type, TypeParam, Visibility,
 };
 
@@ -339,13 +339,23 @@ fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
     } else {
         Vec::new()
     };
+    // specs.md § Exception class hierarchy: `printStackTrace()` is declared
+    // only on the root `Exception` — every subclass inherits it via the
+    // ordinary virtual-dispatch/`extends` mechanism (same as `describe()` in
+    // a user-defined hierarchy), so there's no need to redeclare it on each
+    // one.
+    let methods = if parent.is_none() {
+        vec![ctor, print_stack_trace_method()]
+    } else {
+        vec![ctor]
+    };
     ClassDecl {
         name: name.to_string(),
         type_params: Vec::new(),
         extends: parent.map(str::to_string),
         implements: Vec::new(),
         fields,
-        methods: vec![ctor],
+        methods,
         // specs.md § Exception class hierarchy declares every one of these
         // `class readonly ExceptionName { ... }` — safe to mark since the
         // only place any of them ever assigns a field is their own
@@ -357,5 +367,92 @@ fn exception_class(name: &str, parent: Option<&str>) -> ClassDecl {
         decl_line: 0,
         is_enum: false,
         enum_cases: Vec::new(),
+    }
+}
+
+/// specs.md § Exception class hierarchy, `printStackTrace()`: writes
+/// `message` to `system.Err`, followed by one `"    at " + file + ":" +
+/// line` line per `stackTrace` frame, in capture order (throw site first).
+/// Built as AST here (rather than parsed `.nl` source, like the rest of
+/// this file) so it type-checks and compiles through the ordinary
+/// `nl-sema`/`nl-codegen` pipeline exactly like a hand-written override
+/// would — no new native VM dispatch is needed, since `system.Err.println`
+/// is already native (see `nl_vm::native`).
+///
+/// **Known limitation** (specs.md, same section): without a reflection API,
+/// this cannot prefix the output with the exception's runtime class name
+/// the way Java's `Throwable.printStackTrace()` does — only `message` and
+/// the frame list are available.
+fn print_stack_trace_method() -> MethodDecl {
+    fn println_stderr(arg: Expr) -> Stmt {
+        Stmt {
+            kind: StmtKind::Expr(Expr::MethodCall(
+                Box::new(Expr::FieldAccess(
+                    Box::new(Expr::Ident("system".to_string())),
+                    "Err".to_string(),
+                )),
+                "println".to_string(),
+                vec![Arg {
+                    name: None,
+                    is_ref: false,
+                    value: arg,
+                }],
+            )),
+            line: 0,
+        }
+    }
+
+    let message_line = println_stderr(Expr::FieldAccess(
+        Box::new(Expr::This),
+        "message".to_string(),
+    ));
+
+    // `"    at " + point.file + ":" + point.line` — left-associative, exactly
+    // as written in specs.md.
+    let frame_line = Expr::Binary(
+        BinOp::Add,
+        Box::new(Expr::Binary(
+            BinOp::Add,
+            Box::new(Expr::Binary(
+                BinOp::Add,
+                Box::new(Expr::StringLit("    at ".to_string())),
+                Box::new(Expr::FieldAccess(
+                    Box::new(Expr::Ident("point".to_string())),
+                    "file".to_string(),
+                )),
+            )),
+            Box::new(Expr::StringLit(":".to_string())),
+        )),
+        Box::new(Expr::FieldAccess(
+            Box::new(Expr::Ident("point".to_string())),
+            "line".to_string(),
+        )),
+    );
+
+    let frames_loop = Stmt {
+        kind: StmtKind::ForEach {
+            ty: None,
+            var: "point".to_string(),
+            iterable: Expr::FieldAccess(Box::new(Expr::This), "stackTrace".to_string()),
+            body: vec![println_stderr(frame_line)],
+        },
+        line: 0,
+    };
+
+    MethodDecl {
+        name: "printStackTrace".to_string(),
+        kind: MethodKind::Normal,
+        visibility: Visibility::Public,
+        visibility_explicit: true,
+        is_static: false,
+        is_const: false,
+        is_abstract: false,
+        is_final: false,
+        is_nodiscard: false,
+        return_type: Type::Void,
+        params: Vec::new(),
+        throws: Vec::new(),
+        body: vec![message_line, frames_loop],
+        decl_line: 0,
     }
 }

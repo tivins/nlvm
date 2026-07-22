@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0]
+
+### Added
+- `Exception.printStackTrace()` (specs.md § Exception class hierarchy, v0.8.47) — writes `message` to `system.Err`, followed by one `"    at " + file + ":" + line` line per `stackTrace` frame, in throw-site-first order. Implemented as an ordinary inherited method on the prelude's root `Exception` class, so every built-in and user-defined exception subclass gets it for free.
+
 ## [0.6.0]
 
 ### Added
