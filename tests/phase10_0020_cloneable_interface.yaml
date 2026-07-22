@@ -1,0 +1,43 @@
+---
+title: "Built-in `Cloneable` interface — specs.md § Cloneable interface: `Self clone()` returns an independent shallow copy; mutating the copy does not affect the original."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  1
+  2
+  1
+  99
+expected_stderr: ""
+---
+
+#NLFILE phase10/cloneable/Point.nl
+namespace phase10.cloneable;
+class Point implements Cloneable {
+	public int x;
+	public int y;
+
+	public construct(int x, int y) {
+		this.x = x;
+		this.y = y;
+	}
+
+	public Self clone() {
+		return new Point(this.x, this.y);
+	}
+}
+
+#NLFILE phase10/cloneable/Main.nl
+namespace phase10.cloneable;
+class Main {
+	public static int main(string[] args) {
+		auto original = new Point(1, 2);
+		auto copy = original.clone();
+		system.Out.println(system.Int.toString(original.x));
+		system.Out.println(system.Int.toString(original.y));
+
+		copy.x = 99;
+		system.Out.println(system.Int.toString(original.x));
+		system.Out.println(system.Int.toString(copy.x));
+		return 0;
+	}
+}

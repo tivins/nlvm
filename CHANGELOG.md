@@ -5,6 +5,13 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0]
+
+### Added
+- `Self`/`type` contextual keywords are now also usable inside an **interface body** (specs.md § Self in interfaces), e.g. `interface Spawner { public Self spawn(); }` — previously a parse error. An implementing class writes `Self`/`type` (or its own name) in its own method declaration to get the covariant return type; this compiler doesn't verify interface method conformance beyond existing const-correctness checking (E044), so covariance itself relies on the implementer writing the signature correctly, same as before this change.
+- Built-in `Cloneable` interface (specs.md § Cloneable interface): `public Self clone();`. Implement it and call `clone()` as an ordinary instance method for a shallow copy.
+- Built-in `ValueEquatable` interface (specs.md § ValueEquatable interface): `public bool valueEquals(const Self|null other); public int valueHash();`. Implement it for structural equality distinct from `==` (reference identity). `system.Map`/`List` key lookup does not yet call into `valueEquals`/`valueHash` (still reference identity for object keys) — see `Next.md`.
+
 ## [0.8.0]
 
 ### Added

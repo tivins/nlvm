@@ -80,6 +80,18 @@ pub fn files() -> Vec<SourceFile> {
     files.push(SourceFile {
         namespace: Vec::new(),
         uses: Vec::new(),
+        item: SourceItem::Interface(cloneable()),
+        path: PRELUDE_PATH.to_string(),
+    });
+    files.push(SourceFile {
+        namespace: Vec::new(),
+        uses: Vec::new(),
+        item: SourceItem::Interface(value_equatable()),
+        path: PRELUDE_PATH.to_string(),
+    });
+    files.push(SourceFile {
+        namespace: Vec::new(),
+        uses: Vec::new(),
         item: SourceItem::Class(box_class()),
         path: PRELUDE_PATH.to_string(),
     });
@@ -264,6 +276,73 @@ fn stringable() -> InterfaceDecl {
             params: Vec::new(),
             is_const: true,
         }],
+        decl_line: 0,
+    }
+}
+
+/// specs.md § Cloneable interface — `public Self clone();`. `Self` here is
+/// the literal placeholder `Type::Named("Self")` produced by
+/// `parser::parse_interface_decl` for a parsed `interface Cloneable { public
+/// Self clone(); }`; hand-built here for the same reason the rest of this
+/// file is hand-built rather than parsed (no `.nl`-source-loading mechanism
+/// exists — see the module doc comment), so it's written out directly
+/// instead of going through the parser. An implementing class writes `public
+/// Self clone() { return new Self(...); }` (or its own class name directly)
+/// in its own body, which the class-body `current_class` mechanism already
+/// resolves correctly (see `parser.rs`'s `parse_type_atom`) — `clone()` is
+/// then an ordinary instance method, dispatched exactly like any other
+/// virtual method call (vm.md § Object operations); no VM-level cloning
+/// support is needed.
+fn cloneable() -> InterfaceDecl {
+    InterfaceDecl {
+        name: "Cloneable".to_string(),
+        methods: vec![MethodSig {
+            name: "clone".to_string(),
+            return_type: Type::Named("Self".to_string()),
+            params: Vec::new(),
+            is_const: false,
+        }],
+        decl_line: 0,
+    }
+}
+
+/// specs.md § ValueEquatable interface — `public bool valueEquals(const
+/// Self|null other); public int valueHash();`. Same hand-built-AST rationale
+/// as `cloneable()` above.
+///
+/// **Known limitation** (matching the existing doc comment on this gap in
+/// `nl_vm::native` and `nl_sema`/`nl_codegen`'s `native_generics.rs`):
+/// `system.Map`/`List` key/element lookup still uses `values_equal`
+/// (primitive/string value equality, reference identity for everything
+/// else) — it does not call back into a `ValueEquatable`-implementing
+/// object's `valueEquals`/`valueHash`. Declaring the interface makes
+/// `valueEquals`/`valueHash` implementable and callable as ordinary instance
+/// methods (specs.md's own example — `p1.valueEquals(p2)` — needs nothing
+/// more than that), but the `system.Map` optimization specs.md describes
+/// remains unimplemented.
+fn value_equatable() -> InterfaceDecl {
+    InterfaceDecl {
+        name: "ValueEquatable".to_string(),
+        methods: vec![
+            MethodSig {
+                name: "valueEquals".to_string(),
+                return_type: Type::Bool,
+                params: vec![Param {
+                    name: "other".to_string(),
+                    ty: Type::Union(vec![Type::Named("Self".to_string()), Type::NullT]),
+                    is_const: true,
+                    default: None,
+                    is_ref: false,
+                }],
+                is_const: false,
+            },
+            MethodSig {
+                name: "valueHash".to_string(),
+                return_type: Type::Int,
+                params: Vec::new(),
+                is_const: false,
+            },
+        ],
         decl_line: 0,
     }
 }

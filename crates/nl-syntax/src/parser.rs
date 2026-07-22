@@ -243,6 +243,26 @@ impl Parser {
         let decl_line = self.line();
         self.eat_keyword(Keyword::Interface)?;
         let name = self.eat_ident()?;
+        // specs.md § Self in interfaces: `Self` inside an interface body
+        // denotes "the implementing class", resolved per-class at
+        // `implements` time rather than to a single fixed name — unlike a
+        // class/enum body, there is no single class known yet here. Reuse
+        // the same `current_class` sentinel mechanism regardless: park the
+        // literal placeholder name `"Self"` in `Type::Named("Self")` for the
+        // duration of this interface's method signatures. `resolve_type`'s
+        // simple-name-to-FQCN map (nl-sema/nl-codegen's
+        // `class_table::import_map`) never contains a class actually named
+        // `Self`, so the lookup falls through unresolved (lenient by
+        // design — see `resolve_type`'s doc comment) and the placeholder
+        // simply survives into the interface's `MethodSig`s. No implementing
+        // class ever re-resolves it against its own name (this compiler
+        // doesn't check interface method conformance beyond E044's
+        // const-correctness pass — see `check_const_interface_impl`), so an
+        // implementing class must itself write `Self`/`type` or its own name
+        // literally in its method declaration (already resolved correctly by
+        // the class-body mechanism above) to get the covariant signature
+        // specs.md describes.
+        self.current_class = Some("Self".to_string());
         self.eat_punct(Punct::LBrace)?;
         let mut methods = Vec::new();
         while !self.is_punct(Punct::RBrace) {
@@ -840,9 +860,11 @@ impl Parser {
             // `class_table::import_map`) already maps a class's own simple
             // name to its own FQCN, so `Type::Named(current_class)` resolves
             // correctly with no further plumbing. Only meaningful inside a
-            // class/enum body (`current_class` is `None` at top level and
-            // inside an interface body, where full `Self` covariance is not
-            // supported yet).
+            // class/enum/interface body (`current_class` is `None` at top
+            // level); `parse_interface_decl` sets it to the literal
+            // placeholder `"Self"` for the duration of the interface body
+            // (specs.md § Self in interfaces — see that function's doc
+            // comment for why a placeholder name is enough here).
             TokenKind::Keyword(Keyword::TypeKw) | TokenKind::Keyword(Keyword::SelfType) => {
                 let Some(class_name) = self.current_class.clone() else {
                     return Err(SyntaxError::Parse(

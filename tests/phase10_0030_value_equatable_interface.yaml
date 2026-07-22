@@ -1,0 +1,48 @@
+---
+title: "Built-in `ValueEquatable` interface — specs.md § ValueEquatable interface: `valueEquals`/`valueHash` give structural equality, distinct from `==` reference identity."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  false
+  true
+  false
+  true
+expected_stderr: ""
+---
+
+#NLFILE phase10/valueequatable/Point.nl
+namespace phase10.valueequatable;
+class Point implements ValueEquatable {
+	public int x;
+	public int y;
+
+	public construct(int x, int y) {
+		this.x = x;
+		this.y = y;
+	}
+
+	public bool valueEquals(const Self|null other) {
+		if (other == null) { return false; }
+		return this.x == other.x && this.y == other.y;
+	}
+
+	public int valueHash() {
+		return 31 * this.x + this.y;
+	}
+}
+
+#NLFILE phase10/valueequatable/Main.nl
+namespace phase10.valueequatable;
+class Main {
+	public static int main(string[] args) {
+		auto p1 = new Point(1, 2);
+		auto p2 = new Point(1, 2);
+		auto p3 = new Point(3, 4);
+
+		system.Out.println(system.Bool.toString(p1 == p2));
+		system.Out.println(system.Bool.toString(p1.valueEquals(p2)));
+		system.Out.println(system.Bool.toString(p1.valueEquals(p3)));
+		system.Out.println(system.Bool.toString(p1.valueHash() == p2.valueHash()));
+		return 0;
+	}
+}

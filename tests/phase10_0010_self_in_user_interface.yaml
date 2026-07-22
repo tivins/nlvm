@@ -1,0 +1,58 @@
+---
+title: "`Self` inside a user-declared interface body, resolved per implementing class — specs.md § Self in interfaces (covariant return, two different implementers). Calling a class-specific method on the result without any cast proves the static return type is the concrete class, not the interface."
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  tweet
+  bark
+expected_stderr: ""
+---
+
+#NLFILE phase10/selfinterface/Spawner.nl
+namespace phase10.selfinterface;
+interface Spawner {
+	public Self spawn();
+}
+
+#NLFILE phase10/selfinterface/Sparrow.nl
+namespace phase10.selfinterface;
+class Sparrow implements Spawner {
+	public construct() {}
+
+	public Self spawn() {
+		return new type();
+	}
+
+	public string sound() {
+		return "tweet";
+	}
+}
+
+#NLFILE phase10/selfinterface/Labrador.nl
+namespace phase10.selfinterface;
+class Labrador implements Spawner {
+	public construct() {}
+
+	public Self spawn() {
+		return new type();
+	}
+
+	public string sound() {
+		return "bark";
+	}
+}
+
+#NLFILE phase10/selfinterface/Main.nl
+namespace phase10.selfinterface;
+class Main {
+	public static int main(string[] args) {
+		Sparrow s = new Sparrow();
+		auto s2 = s.spawn();
+		system.Out.println(s2.sound());
+
+		Labrador l = new Labrador();
+		auto l2 = l.spawn();
+		system.Out.println(l2.sound());
+		return 0;
+	}
+}
