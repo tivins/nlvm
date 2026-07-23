@@ -280,7 +280,7 @@ pub(crate) struct LoopCtx {
 pub struct Emitter<'a> {
     pub code: Vec<u8>,
     pub cp: &'a mut ConstantPool,
-    pub(crate) static_sigs: &'a HashMap<String, MethodSig>,
+    pub(crate) static_sigs: &'a HashMap<String, Vec<MethodSig>>,
     pub(crate) classes: &'a HashMap<String, ClassInfo>,
     pub(crate) imports: &'a HashMap<String, String>,
     pub(crate) this_class: u16,
@@ -344,7 +344,7 @@ pub struct Emitter<'a> {
 impl<'a> Emitter<'a> {
     pub fn new(
         cp: &'a mut ConstantPool,
-        static_sigs: &'a HashMap<String, MethodSig>,
+        static_sigs: &'a HashMap<String, Vec<MethodSig>>,
         classes: &'a HashMap<String, ClassInfo>,
         imports: &'a HashMap<String, String>,
         this_class: u16,
@@ -1647,10 +1647,69 @@ impl<'a> Emitter<'a> {
             }
             Err(_) => {}
         }
-        let sig =
-            self.static_sigs.get(name).cloned().ok_or_else(|| {
-                CodegenError::Unsupported(format!("call to unknown method '{name}'"))
-            })?;
+        let candidates = self.static_sigs.get(name).ok_or_else(|| {
+            CodegenError::Unsupported(format!("call to unknown method '{name}'"))
+        })?;
+        // Overload resolution mirrors nl-sema's `sigs`-based one — see
+        // issue #7. Filter by arity (using `defaults`, whose length matches
+        // `param_types` and whose leading non-defaulted count is the
+        // `required` arity), then pick the compatible candidate scoring
+        // lowest by `overload_param_score` on typable arguments; fall back
+        // to the first declared on any tie / all-incompatible outcome, same
+        // leniency rule as `crate::class_table::best_overload`. Inline
+        // rather than delegated because `MethodSig` carries `Vec<ExprTy>`
+        // (already lowered), not the `Vec<Type>` that the generic helper
+        // expects — the conversion happens on the fly here via
+        // `expr_ty_to_type`.
+        let arity_ok: Vec<&MethodSig> = candidates
+            .iter()
+            .filter(|s| {
+                let required = crate::class_table::required_count(&s.defaults);
+                crate::class_table::arity_in_range(required, s.param_types.len(), args.len())
+            })
+            .collect();
+        let sig = if arity_ok.is_empty() {
+            // No arity match: keep the previous "first declared" fall-back
+            // so error messages / tests keyed on it don't shift.
+            candidates[0].clone()
+        } else if arity_ok.len() == 1 {
+            arity_ok[0].clone()
+        } else {
+            let arg_tys: Vec<Option<Type>> = args
+                .iter()
+                .map(|a| self.overload_arg_ty(&a.value).as_ref().map(expr_ty_to_type))
+                .collect();
+            let mut best: Option<(usize, u32)> = None;
+            for (idx, cand) in arity_ok.iter().enumerate() {
+                let mut total = 0u32;
+                let mut compatible = true;
+                for (i, param) in cand.param_types.iter().enumerate() {
+                    let arg = arg_tys.get(i).and_then(|o| o.as_ref());
+                    let param_ty = expr_ty_to_type(param);
+                    match crate::class_table::overload_param_score(
+                        self.classes,
+                        arg,
+                        &param_ty,
+                    ) {
+                        Some(s) => total += s,
+                        None => {
+                            compatible = false;
+                            break;
+                        }
+                    }
+                }
+                if !compatible {
+                    continue;
+                }
+                if best.is_none_or(|(_, b)| total < b) {
+                    best = Some((idx, total));
+                }
+            }
+            match best {
+                Some((idx, _)) => arity_ok[idx].clone(),
+                None => arity_ok[0].clone(),
+            }
+        };
         let positional =
             crate::class_table::resolve_positional_args(&sig.param_names, &sig.defaults, args);
         let boxes = self.compile_call_args(&positional, &sig.param_types, &sig.is_ref, name)?;

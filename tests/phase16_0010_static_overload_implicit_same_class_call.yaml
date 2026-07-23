@@ -1,0 +1,35 @@
+---
+title: "Implicit same-class static call resolves the correct overload by argument type — before issue #7 the per-name `sigs`/`static_sigs` table indexed a single signature and each new same-name overload silently overwrote the prior one, so `show(42)` and `show(\"hi\")` both resolved to whichever overload was declared last"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "int:42\nstring:hi\nshape:circle\n"
+---
+
+#NLFILE phase16/staticoverload/Shape.nl
+namespace phase16.staticoverload;
+class Shape {
+	public construct() {}
+	public string describe() { return "shape"; }
+}
+
+#NLFILE phase16/staticoverload/Circle.nl
+namespace phase16.staticoverload;
+class Circle extends Shape {
+	public construct() { super(); }
+	public string describe() { return "circle"; }
+}
+
+#NLFILE phase16/staticoverload/Main.nl
+namespace phase16.staticoverload;
+class Main {
+	public static string show(int x) { return "int:" + x; }
+	public static string show(string x) { return "string:" + x; }
+	public static string show(Shape x) { return "shape:" + x.describe(); }
+
+	public static int main(string[] args) {
+		system.Out.println(show(42));
+		system.Out.println(show("hi"));
+		system.Out.println(show(new Circle()));
+		return 0;
+	}
+}

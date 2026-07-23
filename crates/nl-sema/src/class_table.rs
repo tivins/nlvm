@@ -381,7 +381,11 @@ pub fn find_method_owner(
 /// can't reason about must never disqualify a candidate it can't actually
 /// evaluate, matching the leniency the rest of this checker already extends
 /// to shapes it doesn't fully model.
-fn overload_param_score(classes: &ClassTable, arg: Option<&Type>, param: &Type) -> Option<u32> {
+pub(crate) fn overload_param_score(
+    classes: &ClassTable,
+    arg: Option<&Type>,
+    param: &Type,
+) -> Option<u32> {
     let arg = arg?;
     if arg == param {
         return Some(0);

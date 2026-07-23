@@ -66,7 +66,7 @@ pub struct MethodInfo {
 
 /// How many leading parameters have no default value — everything past
 /// this index is optional (specs.md § Optional parameters).
-fn required_count(defaults: &[Option<Expr>]) -> usize {
+pub(crate) fn required_count(defaults: &[Option<Expr>]) -> usize {
     defaults.iter().take_while(|d| d.is_none()).count()
 }
 
@@ -74,7 +74,7 @@ fn required_count(defaults: &[Option<Expr>]) -> usize {
 /// could bind against a callee with `required`/`total` parameters — see
 /// `nl_sema::class_table::arity_in_range` (same rationale, independent
 /// copy — this crate doesn't depend on `nl-sema`).
-fn arity_in_range(required: usize, total: usize, argc: usize) -> bool {
+pub(crate) fn arity_in_range(required: usize, total: usize, argc: usize) -> bool {
     required <= argc && argc <= total
 }
 
@@ -461,7 +461,11 @@ pub fn implements_interface(classes: &HashMap<String, ClassInfo>, fqcn: &str, ta
 /// — always scores `Some(0)`, never disqualifying a candidate it can't
 /// actually evaluate). Must stay in lockstep with the nl-sema copy: see
 /// `Emitter::overload_arg_ty`'s doc comment for why.
-fn overload_param_score(classes: &HashMap<String, ClassInfo>, arg: Option<&Type>, param: &Type) -> Option<u32> {
+pub(crate) fn overload_param_score(
+    classes: &HashMap<String, ClassInfo>,
+    arg: Option<&Type>,
+    param: &Type,
+) -> Option<u32> {
     let arg = arg?;
     if arg == param {
         return Some(0);

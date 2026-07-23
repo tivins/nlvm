@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.3]
+
+### Fixed
+- Implicit same-class static calls (`foo(x)` without a receiver, resolved against the current class's own static methods) now pick the correct overload by argument type instead of always resolving to whichever same-name overload was declared last. Previously a class declaring two static methods `show(int)` and `show(string)` silently kept only the last declared one in the per-name signature table, so `show(42)` and `show("hi")` both resolved to `show(string)` — the first call failing to compile with `E004` or, worse, targeting the wrong method. Same argument-type-based resolution as the Phase 5 fix already applied to `new T(...)`, `this(...)`/`super(...)` delegation, and dotted method calls (see [issue #7](https://github.com/nlvm-lang/nlvm/issues/7)).
+
 ## [0.12.2]
 
 ### Fixed

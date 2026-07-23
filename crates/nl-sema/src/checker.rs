@@ -69,12 +69,21 @@ pub fn check_source_file(
             check_abstract_final(class, classes, &imports, &this_fqcn),
         )?;
 
-        let mut sigs: HashMap<String, MethodSig> = HashMap::new();
+        // Every same-name static overload is kept (declaration order),
+        // not just the last one — the fix for the "arity-only" implicit
+        // same-class static call resolution gap tracked as issue #7.
+        // Previously this was `HashMap<String, MethodSig>` where each new
+        // static method with a name already present silently overwrote the
+        // prior one, so a class with `show(int)` + `show(string)` only
+        // saw the second overload at any implicit call site.
+        let mut sigs: HashMap<String, Vec<MethodSig>> = HashMap::new();
         for m in &class.methods {
             if m.is_static && m.kind == MethodKind::Normal {
                 let return_ty = class_table::resolve_type(&m.return_type, &imports);
                 let throws = resolve_throws(m, &imports);
-                sigs.insert(m.name.clone(), (m.params.clone(), return_ty, throws));
+                sigs.entry(m.name.clone())
+                    .or_default()
+                    .push((m.params.clone(), return_ty, throws));
             }
         }
 
@@ -741,7 +750,7 @@ fn resolve_delegation_target(
 
 fn check_method(
     method: &MethodDecl,
-    sigs: &HashMap<String, MethodSig>,
+    sigs: &HashMap<String, Vec<MethodSig>>,
     classes: &ClassTable,
     imports: &HashMap<String, String>,
     warnings: &mut Vec<(u32, SemaWarning)>,
@@ -825,7 +834,7 @@ struct VarEntry {
 /// reused), so it doesn't need to be pruned when a block's scope ends —
 /// nothing can reference an out-of-scope name again anyway.
 struct MethodChecker<'a> {
-    sigs: &'a HashMap<String, MethodSig>,
+    sigs: &'a HashMap<String, Vec<MethodSig>>,
     classes: &'a ClassTable,
     imports: &'a HashMap<String, String>,
     /// compiler.md § Static context restrictions — E040. `true` while
@@ -1827,9 +1836,74 @@ impl<'a> MethodChecker<'a> {
                     arg_types.push(self.check_expr(&a.value, assigned)?);
                 }
                 // Unresolved calls: no dedicated E-code, deferred to nl-codegen.
-                let Some((params, return_ty, throws)) = self.sigs.get(name).cloned() else {
+                let Some(candidates) = self.sigs.get(name) else {
                     return Ok(Type::Void);
                 };
+                let arg_tys: Vec<Option<Type>> =
+                    args.iter().map(|a| self.overload_arg_ty(&a.value)).collect();
+                // Same tie-breaking / leniency rule as
+                // `class_table::best_overload`: filter by arity, then pick
+                // the compatible candidate with the lowest score; fall back
+                // to the first declared when nothing scores strictly best
+                // (single-candidate case, all-ties, or no compatible
+                // candidate). Inline rather than delegated because
+                // `MethodSig`'s `Vec<Param>` shape isn't the `Vec<Type>` the
+                // generic `best_overload` expects — see issue #7.
+                let arity_ok: Vec<&MethodSig> = candidates
+                    .iter()
+                    .filter(|(params, _, _)| {
+                        let required = class_table::required_count(params);
+                        class_table::arity_in_range(required, params.len(), args.len())
+                    })
+                    .collect();
+                let picked = if arity_ok.is_empty() {
+                    // No arity match: preserve the previous "fall back to
+                    // first declared" behavior — leniency, deferred to
+                    // nl-codegen for a proper diagnostic.
+                    match candidates.first() {
+                        Some(sig) => sig,
+                        None => return Ok(Type::Void),
+                    }
+                } else if arity_ok.len() == 1 {
+                    arity_ok[0]
+                } else {
+                    let mut best: Option<(usize, u32)> = None;
+                    for (idx, (params, _, _)) in arity_ok.iter().enumerate() {
+                        let mut total = 0u32;
+                        let mut compatible = true;
+                        for (i, param) in params.iter().enumerate() {
+                            let arg = arg_tys.get(i).and_then(|o| o.as_ref());
+                            // `param.ty` is the raw AST type (unresolved
+                            // short name for `Named`); `arg` comes from
+                            // `overload_arg_ty`, which returns FQCNs.
+                            // Resolve here so the two sides compare
+                            // apples-to-apples via `is_subclass_or_same`.
+                            let param_ty = self.resolve_ty(&param.ty);
+                            match class_table::overload_param_score(
+                                self.classes,
+                                arg,
+                                &param_ty,
+                            ) {
+                                Some(s) => total += s,
+                                None => {
+                                    compatible = false;
+                                    break;
+                                }
+                            }
+                        }
+                        if !compatible {
+                            continue;
+                        }
+                        if best.is_none_or(|(_, b)| total < b) {
+                            best = Some((idx, total));
+                        }
+                    }
+                    match best {
+                        Some((idx, _)) => arity_ok[idx],
+                        None => arity_ok[0],
+                    }
+                };
+                let (params, return_ty, throws) = picked.clone();
                 let names: Vec<String> = params.iter().map(|p| p.name.clone()).collect();
                 let required = class_table::required_count(&params);
                 let binding = bind_call_args(&names, required, args)?;

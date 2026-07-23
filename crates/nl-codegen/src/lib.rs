@@ -158,7 +158,14 @@ fn compile_file(
             // (unqualified) calls resolve regardless of declaration order —
             // instance methods/constructors are only reachable via `expr.m(...)`
             // /`new`/`this(...)`, resolved directly at their call site instead.
-            let mut static_sigs = HashMap::new();
+            // Every same-name static overload is kept (declaration order) —
+            // see issue #7. Previously this was `HashMap<String, MethodSig>`
+            // where the last-declared overload silently overwrote earlier
+            // ones, and `Emitter::compile_call` would then always emit an
+            // `INVOKE_STATIC` against that single overload regardless of
+            // actual argument types. Must stay in lockstep with nl-sema's
+            // own per-name overload set (see `nl_sema::checker`'s `sigs`).
+            let mut static_sigs: HashMap<String, Vec<MethodSig>> = HashMap::new();
             for m in &class.methods {
                 if m.is_static && m.kind == MethodKind::Normal {
                     let name_index = cp.add_utf8(m.name.clone());
@@ -176,17 +183,14 @@ fn compile_file(
                     let descriptor_index = cp.add_type_desc(&descriptor);
                     let method_ref_index =
                         cp.add_method_ref(this_class, name_index, descriptor_index);
-                    static_sigs.insert(
-                        m.name.clone(),
-                        MethodSig {
-                            param_types: params.iter().map(expr_ty_of).collect(),
-                            param_names: m.params.iter().map(|p| p.name.clone()).collect(),
-                            defaults: m.params.iter().map(|p| p.default.clone()).collect(),
-                            is_ref,
-                            return_ty: expr_ty_of(&return_ty),
-                            method_ref_index,
-                        },
-                    );
+                    static_sigs.entry(m.name.clone()).or_default().push(MethodSig {
+                        param_types: params.iter().map(expr_ty_of).collect(),
+                        param_names: m.params.iter().map(|p| p.name.clone()).collect(),
+                        defaults: m.params.iter().map(|p| p.default.clone()).collect(),
+                        is_ref,
+                        return_ty: expr_ty_of(&return_ty),
+                        method_ref_index,
+                    });
                 }
             }
 
@@ -337,7 +341,7 @@ fn compile_method(
     this_fqcn: &str,
     imports: &HashMap<String, String>,
     classes: &HashMap<String, ClassInfo>,
-    static_sigs: &HashMap<String, MethodSig>,
+    static_sigs: &HashMap<String, Vec<MethodSig>>,
 ) -> Result<(MethodDescriptor, Vec<Module>), CodegenError> {
     let _ = class;
     let name_index = cp.add_utf8(name.to_string());
