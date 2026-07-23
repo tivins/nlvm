@@ -1,0 +1,48 @@
+---
+title: "switch inside a loop — 'break' only exits the switch, 'continue' still targets the enclosing loop"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  3
+  2
+expected_stderr: ""
+---
+
+#NLFILE phase11/switchloop/Main.nl
+namespace phase11.switchloop;
+class Main {
+	public static int main(string[] args) {
+		// 'break' inside the switch must NOT exit the while loop.
+		int i = 0;
+		int iterations = 0;
+		while (i < 3) {
+			switch (i) {
+				case 1:
+					break;
+				default:
+					break;
+			}
+			iterations = iterations + 1;
+			i = i + 1;
+		}
+		system.Out.println(system.Int.toString(iterations));
+
+		// 'continue' inside the switch must target the while loop, skipping
+		// the rest of the loop body for that iteration.
+		int j = 0;
+		int touched = 0;
+		while (j < 3) {
+			int current = j;
+			j = j + 1;
+			switch (current) {
+				case 1:
+					continue;
+				default:
+					break;
+			}
+			touched = touched + 1;
+		}
+		system.Out.println(system.Int.toString(touched));
+		return 0;
+	}
+}

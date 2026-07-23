@@ -2,7 +2,7 @@
 //! (kept as a separate, independent view rather than a shared dependency —
 //! sema only needs enough of it for lenient existence/type-shape checks).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use nl_syntax::ast::{MethodKind, SourceFile, SourceItem, Type, Visibility};
 
@@ -116,13 +116,40 @@ pub fn is_subclass_or_same(classes: &ClassTable, sub: &str, sup: &str) -> bool {
     }
 }
 
+/// Whether `iface` (an interface FQCN) is `target` itself or, transitively,
+/// `extends`-es it — compiler.md § Interface inheritance: "the extending
+/// interface inherits all method declarations of its parents", and "an
+/// implementing class can be upcast to any interface in the hierarchy".
+/// Interfaces store their `extends` parents in `ClassInfo::implements` (see
+/// `build_class_table`'s `SourceItem::Interface` arm) — reusing the same
+/// field classes use for `implements`, since both express "the set of
+/// interfaces this satisfies". `seen` guards against a diamond
+/// (`Resource extends Closeable, Stringable` where both ultimately extend a
+/// common ancestor) re-walking the same interface repeatedly; cheap enough
+/// to allocate fresh per top-level call given typical interface hierarchy
+/// depth.
+fn interface_extends(classes: &ClassTable, iface: &str, target: &str, seen: &mut HashSet<String>) -> bool {
+    if iface == target {
+        return true;
+    }
+    if !seen.insert(iface.to_string()) {
+        return false;
+    }
+    let Some(info) = classes.get(iface) else {
+        return false;
+    };
+    info.implements
+        .iter()
+        .any(|parent| interface_extends(classes, parent, target, seen))
+}
+
 /// Whether `fqcn` (or, transitively, any of its `extends` ancestors)
-/// declares `target` in its `implements` list — used for `Stringable`
-/// dispatch (E008/E007's concat/cast operand check) so a subclass of a
-/// `Stringable`-implementing class counts too, not just the exact
-/// declaring class. No transitivity through interface-`extends` (an
-/// interface `extends`ing another isn't parsed yet — see
-/// `IMPLEMENTATION_STATUS.md`), matching `is_object_assignable`'s existing
+/// declares `target` in its `implements` list, or one of those directly
+/// implemented interfaces itself (transitively) `extends`-es `target` — used
+/// for `Stringable` dispatch (E008/E007's concat/cast operand check) so a
+/// subclass of a `Stringable`-implementing class counts too, not just the
+/// exact declaring class, and so does a class implementing an interface that
+/// itself extends `Stringable`. Matches `is_object_assignable`'s existing
 /// leniency.
 pub fn implements_interface(classes: &ClassTable, fqcn: &str, target: &str) -> bool {
     let mut current = fqcn;
@@ -130,7 +157,11 @@ pub fn implements_interface(classes: &ClassTable, fqcn: &str, target: &str) -> b
         let Some(info) = classes.get(current) else {
             return false;
         };
-        if info.implements.iter().any(|i| i == target) {
+        if info
+            .implements
+            .iter()
+            .any(|i| interface_extends(classes, i, target, &mut HashSet::new()))
+        {
             return true;
         }
         match &info.extends {
@@ -336,22 +367,8 @@ pub fn find_method_owner(
 /// `ClassInfo::implements`'s doc comment — so no further transitivity is
 /// needed there).
 pub fn satisfies_bound(classes: &ClassTable, concrete_fqcn: &str, bound_fqcn: &str) -> bool {
-    if is_subclass_or_same(classes, concrete_fqcn, bound_fqcn) {
-        return true;
-    }
-    let mut current = concrete_fqcn;
-    loop {
-        let Some(info) = classes.get(current) else {
-            return false;
-        };
-        if info.implements.iter().any(|i| i == bound_fqcn) {
-            return true;
-        }
-        match info.extends.as_deref() {
-            Some(parent) => current = parent,
-            None => return false,
-        }
-    }
+    is_subclass_or_same(classes, concrete_fqcn, bound_fqcn)
+        || implements_interface(classes, concrete_fqcn, bound_fqcn)
 }
 
 /// compiler.md § Visibility enforcement — E018. `declaring_fqcn` is the
@@ -492,9 +509,17 @@ pub fn build_class_table(files: &[SourceFile]) -> ClassTable {
                         throws: Vec::new(),
                     })
                     .collect();
+                // compiler.md § Interface inheritance — `extends` parents
+                // are stored in `implements` (see `interface_extends`'s doc
+                // comment for why that field does double duty).
+                let extends_ifaces = iface
+                    .extends
+                    .iter()
+                    .map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()))
+                    .collect();
                 ClassInfo {
                     extends: None,
-                    implements: Vec::new(),
+                    implements: extends_ifaces,
                     fields: Vec::new(),
                     methods,
                     ctors: Vec::new(),

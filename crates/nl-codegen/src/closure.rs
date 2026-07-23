@@ -91,6 +91,15 @@ fn collect_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
                 collect_block(f, names);
             }
         }
+        StmtKind::Switch { subject, cases } => {
+            collect_expr(subject, names);
+            for case in cases {
+                if let Some(v) = &case.value {
+                    collect_expr(v, names);
+                }
+                collect_block(&case.body, names);
+            }
+        }
     }
 }
 
@@ -314,6 +323,17 @@ fn scan_stmt(stmt: &Stmt, captured: &mut HashSet<String>, mutated: &mut HashSet<
             }
             if let Some(f) = finally {
                 for s in f {
+                    scan_stmt(s, captured, mutated);
+                }
+            }
+        }
+        StmtKind::Switch { subject, cases } => {
+            scan_expr(subject, captured, mutated);
+            for case in cases {
+                if let Some(v) = &case.value {
+                    scan_expr(v, captured, mutated);
+                }
+                for s in &case.body {
                     scan_stmt(s, captured, mutated);
                 }
             }

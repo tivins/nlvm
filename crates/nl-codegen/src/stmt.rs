@@ -115,11 +115,14 @@ impl<'a> Emitter<'a> {
                 var,
                 iterable,
                 body,
+                ..
             } => self.compile_foreach(ty.as_ref(), var, iterable, body)?,
             StmtKind::Break => {
+                // Targets the nearest enclosing construct of either kind —
+                // a `switch` or a real loop (specs.md § Switch/Match).
                 if self.loops.is_empty() {
                     return Err(CodegenError::Unsupported(
-                        "'break' outside a loop".to_string(),
+                        "'break' outside a loop or switch".to_string(),
                     ));
                 }
                 self.replay_finally_blocks(self.loops.last().unwrap().finally_depth)?;
@@ -127,16 +130,31 @@ impl<'a> Emitter<'a> {
                 self.loops.last_mut().unwrap().break_patches.push(patch);
             }
             StmtKind::Continue => {
-                if self.loops.is_empty() {
+                // Skips past any enclosing `switch` frame(s) to the nearest
+                // real loop — see `LoopCtx::is_switch`'s doc comment.
+                let Some(finally_depth) = self
+                    .loops
+                    .iter()
+                    .rev()
+                    .find(|l| !l.is_switch)
+                    .map(|l| l.finally_depth)
+                else {
                     return Err(CodegenError::Unsupported(
                         "'continue' outside a loop".to_string(),
                     ));
-                }
-                self.replay_finally_blocks(self.loops.last().unwrap().finally_depth)?;
+                };
+                self.replay_finally_blocks(finally_depth)?;
                 let patch = self.branch(Opcode::Goto, 0);
-                self.loops.last_mut().unwrap().continue_patches.push(patch);
+                self.loops
+                    .iter_mut()
+                    .rev()
+                    .find(|l| !l.is_switch)
+                    .unwrap()
+                    .continue_patches
+                    .push(patch);
             }
             StmtKind::Block(block) => self.compile_block(block)?,
+            StmtKind::Switch { subject, cases } => self.compile_switch(subject, cases)?,
         }
         Ok(())
     }
@@ -275,6 +293,7 @@ impl<'a> Emitter<'a> {
             break_patches: Vec::new(),
             continue_patches: Vec::new(),
             finally_depth: self.finally_stack.len(),
+            is_switch: false,
         });
         self.compile_block(body)?;
         let ctx = self.loops.pop().unwrap();
@@ -316,6 +335,7 @@ impl<'a> Emitter<'a> {
             break_patches: Vec::new(),
             continue_patches: Vec::new(),
             finally_depth: self.finally_stack.len(),
+            is_switch: false,
         });
         self.compile_block(body)?;
         let ctx = self.loops.pop().unwrap();
@@ -414,6 +434,7 @@ impl<'a> Emitter<'a> {
             break_patches: Vec::new(),
             continue_patches: Vec::new(),
             finally_depth: self.finally_stack.len(),
+            is_switch: false,
         });
         self.compile_block(body)?;
         let ctx = self.loops.pop().unwrap();
@@ -431,6 +452,83 @@ impl<'a> Emitter<'a> {
             self.patch_branch_to(pc, operand, end_pc);
         }
         self.pop_scope();
+        Ok(())
+    }
+
+    /// `switch (subject) { case v1: ... case v2: ... default: ... }` —
+    /// specs.md § Switch/Match, fall-through semantics. Compiled as a single-
+    /// pass dispatch (one `CmpEq`+branch per `case`, testing the subject —
+    /// stashed in a scratch local so its value survives across the whole
+    /// statement, unlike `compile_match`'s stack-resident `Dup`/`Pop`, which
+    /// wouldn't survive arbitrary statement bodies between comparisons)
+    /// followed by every case's body laid out as one flat instruction
+    /// sequence in source order: a matched `case`'s jump target is the start
+    /// of its own body, and falling off the end of a body (no `break`) runs
+    /// straight into the next one — that's fall-through, for free, from the
+    /// physical layout. `default`, if present, is where "no case matched"
+    /// falls through to, regardless of its position among `cases` (matching
+    /// C's `switch`: `default` is the wildcard for unmatched values, not
+    /// necessarily the last arm — see `StmtKind::Switch`'s doc comment).
+    /// `break` inside any case body is handled by `compile_stmt`'s
+    /// `StmtKind::Break` arm through the same `self.loops` stack real loops
+    /// use (`LoopCtx::is_switch = true` here so `continue` knows to skip
+    /// past this frame to an enclosing real loop instead).
+    fn compile_switch(
+        &mut self,
+        subject: &nl_syntax::ast::Expr,
+        cases: &[nl_syntax::ast::SwitchCase],
+    ) -> Result<(), CodegenError> {
+        let subject_ty = self.compile_expr(subject)?;
+        let subject_local = self.declare_scratch_local(subject_ty.clone());
+        self.emit_store(subject_local);
+
+        // Dispatch: one comparison + conditional jump per value-`case`,
+        // targeting a body-start patch resolved once every body has been
+        // laid out below. `default_index`, if set, is where the
+        // "nothing matched" fallthrough goes instead of past the whole
+        // statement.
+        let mut value_patches: Vec<(usize, (usize, usize))> = Vec::new();
+        let mut default_index: Option<usize> = None;
+        for (i, case) in cases.iter().enumerate() {
+            match &case.value {
+                Some(value) => {
+                    self.op_u16(Opcode::Load, subject_local, 1);
+                    let value_ty = self.compile_expr(value)?;
+                    self.coerce_value(&value_ty, &subject_ty, "switch case")?;
+                    self.op(Opcode::CmpEq, -1);
+                    value_patches.push((i, self.branch(Opcode::IfTrue, -1)));
+                }
+                None => default_index = Some(i),
+            }
+        }
+        let no_match_patch = self.branch(Opcode::Goto, 0);
+
+        self.loops.push(LoopCtx {
+            break_patches: Vec::new(),
+            continue_patches: Vec::new(),
+            finally_depth: self.finally_stack.len(),
+            is_switch: true,
+        });
+        let mut body_starts = vec![0usize; cases.len()];
+        for (i, case) in cases.iter().enumerate() {
+            body_starts[i] = self.code.len();
+            self.compile_block(&case.body)?;
+        }
+        let end_pc = self.code.len();
+        let ctx = self.loops.pop().unwrap();
+
+        for (i, (pc, operand)) in value_patches {
+            self.patch_branch_to(pc, operand, body_starts[i]);
+        }
+        let (pc, operand) = no_match_patch;
+        self.patch_branch_to(pc, operand, default_index.map_or(end_pc, |i| body_starts[i]));
+        for (pc, operand) in ctx.break_patches {
+            self.patch_branch_to(pc, operand, end_pc);
+        }
+        debug_assert!(
+            ctx.continue_patches.is_empty(),
+            "'continue' always attaches to the nearest non-switch LoopCtx — see StmtKind::Continue"
+        );
         Ok(())
     }
 

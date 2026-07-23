@@ -67,6 +67,7 @@ pub fn files() -> Vec<SourceFile> {
         .map(|(name, parent)| SourceFile {
             namespace: Vec::new(),
             uses: Vec::new(),
+            typedefs: Vec::new(),
             item: SourceItem::Class(exception_class(name, *parent)),
             path: PRELUDE_PATH.to_string(),
         })
@@ -74,30 +75,35 @@ pub fn files() -> Vec<SourceFile> {
     files.push(SourceFile {
         namespace: Vec::new(),
         uses: Vec::new(),
+        typedefs: Vec::new(),
         item: SourceItem::Interface(stringable()),
         path: PRELUDE_PATH.to_string(),
     });
     files.push(SourceFile {
         namespace: Vec::new(),
         uses: Vec::new(),
+        typedefs: Vec::new(),
         item: SourceItem::Interface(cloneable()),
         path: PRELUDE_PATH.to_string(),
     });
     files.push(SourceFile {
         namespace: Vec::new(),
         uses: Vec::new(),
+        typedefs: Vec::new(),
         item: SourceItem::Interface(value_equatable()),
         path: PRELUDE_PATH.to_string(),
     });
     files.push(SourceFile {
         namespace: Vec::new(),
         uses: Vec::new(),
+        typedefs: Vec::new(),
         item: SourceItem::Class(box_class()),
         path: PRELUDE_PATH.to_string(),
     });
     files.push(SourceFile {
         namespace: Vec::new(),
         uses: Vec::new(),
+        typedefs: Vec::new(),
         item: SourceItem::Class(execution_point_class()),
         path: PRELUDE_PATH.to_string(),
     });
@@ -270,6 +276,7 @@ fn box_class() -> ClassDecl {
 fn stringable() -> InterfaceDecl {
     InterfaceDecl {
         name: "Stringable".to_string(),
+        extends: Vec::new(),
         methods: vec![MethodSig {
             name: "toString".to_string(),
             return_type: Type::StringT,
@@ -296,6 +303,7 @@ fn stringable() -> InterfaceDecl {
 fn cloneable() -> InterfaceDecl {
     InterfaceDecl {
         name: "Cloneable".to_string(),
+        extends: Vec::new(),
         methods: vec![MethodSig {
             name: "clone".to_string(),
             return_type: Type::Named("Self".to_string()),
@@ -321,6 +329,7 @@ fn cloneable() -> InterfaceDecl {
 fn value_equatable() -> InterfaceDecl {
     InterfaceDecl {
         name: "ValueEquatable".to_string(),
+        extends: Vec::new(),
         methods: vec![
             MethodSig {
                 name: "valueEquals".to_string(),
@@ -512,6 +521,7 @@ fn print_stack_trace_method() -> MethodDecl {
             var: "point".to_string(),
             iterable: Expr::FieldAccess(Box::new(Expr::This), "stackTrace".to_string()),
             body: vec![println_stderr(frame_line)],
+            is_const: false,
         },
         line: 0,
     };

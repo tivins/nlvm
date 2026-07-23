@@ -186,6 +186,7 @@ fn generate_instantiation(
     SourceFile {
         namespace: template.namespace.clone(),
         uses: Vec::new(),
+        typedefs: Vec::new(),
         item: SourceItem::Class(decl),
         path: template.path.clone(),
     }
@@ -294,6 +295,7 @@ fn scan_stmt_for_box_requests(
             var,
             iterable,
             body,
+            ..
         } => {
             scan_expr_for_box_requests(iterable, scopes, mutated_in_method, out);
             scopes.push(HashMap::new());
@@ -351,6 +353,12 @@ fn scan_stmt_for_box_requests(
             }
             if let Some(f) = finally {
                 scan_block_for_box_requests(f, scopes, mutated_in_method, out);
+            }
+        }
+        StmtKind::Switch { subject, cases } => {
+            scan_expr_for_box_requests(subject, scopes, mutated_in_method, out);
+            for case in cases {
+                scan_block_for_box_requests(&case.body, scopes, mutated_in_method, out);
             }
         }
     }
@@ -559,6 +567,12 @@ fn collect_referenced_in_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
                 collect_referenced_in_block(f, names);
             }
         }
+        StmtKind::Switch { subject, cases } => {
+            collect_referenced_in_expr(subject, names);
+            for case in cases {
+                collect_referenced_in_block(&case.body, names);
+            }
+        }
     }
 }
 
@@ -737,6 +751,12 @@ fn collect_mutated_in_stmt(stmt: &Stmt, names: &mut HashSet<String>) {
                 collect_mutated_in_block(f, names);
             }
         }
+        StmtKind::Switch { subject, cases } => {
+            collect_mutated_in_expr(subject, names);
+            for case in cases {
+                collect_mutated_in_block(&case.body, names);
+            }
+        }
     }
 }
 
@@ -842,7 +862,7 @@ fn collect_mutated_in_lvalue(lvalue: &LValue, names: &mut HashSet<String>) {
 // lookups).
 // ---------------------------------------------------------------------
 
-fn fqcn_of(file: &SourceFile) -> String {
+pub(crate) fn fqcn_of(file: &SourceFile) -> String {
     let name = match &file.item {
         SourceItem::Class(c) => c.name.as_str(),
         SourceItem::Interface(i) => i.name.as_str(),
@@ -854,7 +874,7 @@ fn fqcn_of(file: &SourceFile) -> String {
     }
 }
 
-fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String, String> {
+pub(crate) fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String, String> {
     let mut map = HashMap::new();
     for other in all_files {
         if other.namespace == file.namespace {
@@ -883,7 +903,7 @@ fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String, St
     map
 }
 
-fn resolve_name(name: &str, imports: &HashMap<String, String>) -> String {
+pub(crate) fn resolve_name(name: &str, imports: &HashMap<String, String>) -> String {
     imports
         .get(name)
         .cloned()
@@ -936,7 +956,7 @@ fn mangle_type(ty: &Type) -> String {
 /// Resolves every bare `Named` component of `ty` to an FQCN via `imports`
 /// (needed so two references to the same instantiation, spelled with
 /// different `use`-driven simple names, still mangle identically).
-fn resolve_type_names(ty: &Type, imports: &HashMap<String, String>) -> Type {
+pub(crate) fn resolve_type_names(ty: &Type, imports: &HashMap<String, String>) -> Type {
     match ty {
         Type::Named(name) => Type::Named(resolve_name(name, imports)),
         Type::Array(inner) => Type::Array(Box::new(resolve_type_names(inner, imports))),
@@ -1134,6 +1154,12 @@ fn collect_stmt(
                 collect_block(f, imports, templates, out);
             }
         }
+        StmtKind::Switch { subject, cases } => {
+            collect_expr(subject, imports, templates, out);
+            for case in cases {
+                collect_block(&case.body, imports, templates, out);
+            }
+        }
     }
 }
 
@@ -1294,6 +1320,7 @@ fn rewrite_file(
     SourceFile {
         namespace: file.namespace.clone(),
         uses: file.uses.clone(),
+        typedefs: file.typedefs.clone(),
         item,
         path: file.path.clone(),
     }
@@ -1463,11 +1490,13 @@ fn rewrite_stmt(
             var,
             iterable,
             body,
+            is_const,
         } => StmtKind::ForEach {
             ty: ty.as_ref().map(|t| rewrite_type(t, imports, templates)),
             var: var.clone(),
             iterable: rewrite_expr(iterable, imports, templates),
             body: rewrite_block(body, imports, templates),
+            is_const: *is_const,
         },
         StmtKind::For {
             init,
@@ -1517,6 +1546,19 @@ fn rewrite_stmt(
             finally: finally
                 .as_ref()
                 .map(|b| rewrite_block(b, imports, templates)),
+        },
+        StmtKind::Switch { subject, cases } => StmtKind::Switch {
+            subject: rewrite_expr(subject, imports, templates),
+            cases: cases
+                .iter()
+                .map(|c| crate::ast::SwitchCase {
+                    value: c
+                        .value
+                        .as_ref()
+                        .map(|v| rewrite_expr(v, imports, templates)),
+                    body: rewrite_block(&c.body, imports, templates),
+                })
+                .collect(),
         },
     };
     Stmt {
@@ -1832,11 +1874,13 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
             var,
             iterable,
             body,
+            is_const,
         } => StmtKind::ForEach {
             ty: ty.as_ref().map(|t| subst_type(t, subst)),
             var: var.clone(),
             iterable: subst_expr(iterable, subst),
             body: subst_block(body, subst),
+            is_const: *is_const,
         },
         StmtKind::For {
             init,
@@ -1874,6 +1918,16 @@ fn subst_stmt(stmt: &Stmt, subst: &HashMap<String, Type>) -> Stmt {
                 })
                 .collect(),
             finally: finally.as_ref().map(|b| subst_block(b, subst)),
+        },
+        StmtKind::Switch { subject, cases } => StmtKind::Switch {
+            subject: subst_expr(subject, subst),
+            cases: cases
+                .iter()
+                .map(|c| crate::ast::SwitchCase {
+                    value: c.value.as_ref().map(|v| subst_expr(v, subst)),
+                    body: subst_block(&c.body, subst),
+                })
+                .collect(),
         },
     };
     Stmt {

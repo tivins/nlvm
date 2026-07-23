@@ -450,8 +450,18 @@ fn check_const_interface_impl(
     let Some(info) = classes.get(this_fqcn) else {
         return Ok(());
     };
-    for iface_fqcn in &info.implements {
-        let Some(iface_info) = classes.get(iface_fqcn) else {
+    // compiler.md § Interface inheritance: "a class implementing Closeable
+    // must provide both close() and dispose()" — so E044's const check must
+    // walk each directly-implemented interface's own `extends` closure too,
+    // not just its own directly-declared methods. `seen` guards against
+    // revisiting the same interface through a diamond.
+    let mut seen = std::collections::HashSet::new();
+    let mut queue: Vec<String> = info.implements.clone();
+    while let Some(iface_fqcn) = queue.pop() {
+        if !seen.insert(iface_fqcn.clone()) {
+            continue;
+        }
+        let Some(iface_info) = classes.get(&iface_fqcn) else {
             continue;
         };
         for iface_method in &iface_info.methods {
@@ -472,6 +482,7 @@ fn check_const_interface_impl(
                 ));
             }
         }
+        queue.extend(iface_info.implements.iter().cloned());
     }
     Ok(())
 }
@@ -1377,6 +1388,7 @@ impl<'a> MethodChecker<'a> {
                 var,
                 iterable,
                 body,
+                is_const: is_const_foreach,
             } => {
                 let iterable_ty = self.check_expr(iterable, &mut assigned)?;
                 // Element type: `T` for a `T[]`, `T` for `system.List<T>`,
@@ -1407,16 +1419,18 @@ impl<'a> MethodChecker<'a> {
                 // compiler.md § For-each loop in const context — E039: the
                 // loop variable is implicitly non-modifiable when iterating
                 // `this.<field>` inside a `const` method, or a const/const
-                // `ref` parameter.
-                let is_readonly_collection = match iterable {
-                    Expr::FieldAccess(target, _) => {
-                        self.is_const_method && matches!(**target, Expr::This)
-                    }
-                    Expr::Ident(name) => self
-                        .resolve(name)
-                        .is_some_and(|(id, _)| self.const_vars.contains(&id)),
-                    _ => false,
-                };
+                // `ref` parameter — or explicitly, when the loop header
+                // itself writes `for (const ... : ...)`.
+                let is_readonly_collection = *is_const_foreach
+                    || match iterable {
+                        Expr::FieldAccess(target, _) => {
+                            self.is_const_method && matches!(**target, Expr::This)
+                        }
+                        Expr::Ident(name) => self
+                            .resolve(name)
+                            .is_some_and(|(id, _)| self.const_vars.contains(&id)),
+                        _ => false,
+                    };
                 if is_readonly_collection {
                     self.readonly_loop_vars.insert(id);
                 }
@@ -1456,6 +1470,26 @@ impl<'a> MethodChecker<'a> {
             // merges (e.g. in an enclosing `if`) must treat them as such.
             StmtKind::Break | StmtKind::Continue => Ok((assigned, true)),
             StmtKind::Block(block) => self.check_block(block, assigned),
+            // specs.md § Switch/Match — unlike `match` (`check_match`),
+            // `switch` is a statement with fall-through semantics and no
+            // exhaustiveness requirement: any number of `case`s (including
+            // zero) and at most one `default`, checked independently since
+            // fall-through means execution may enter at any of them. Each
+            // body is checked against a clone of the pre-switch `assigned`
+            // set (fall-through into a later case's body is still reachable
+            // from outside, not chained onto an earlier case's own
+            // assignments) — same conservative "nothing propagates past it"
+            // treatment as a loop body that may run zero times.
+            StmtKind::Switch { subject, cases } => {
+                self.check_expr(subject, &mut assigned)?;
+                for case in cases {
+                    if let Some(value) = &case.value {
+                        self.check_expr(value, &mut assigned)?;
+                    }
+                    self.check_block(&case.body, assigned.clone())?;
+                }
+                Ok((assigned, false))
+            }
         }
     }
 
@@ -1505,10 +1539,7 @@ impl<'a> MethodChecker<'a> {
                     return false;
                 };
                 class_table::is_subclass_or_same(self.classes, from, to)
-                    || self
-                        .classes
-                        .get(from)
-                        .is_some_and(|info| info.implements.iter().any(|i| i == to))
+                    || class_table::implements_interface(self.classes, from, to)
             })
         })
     }

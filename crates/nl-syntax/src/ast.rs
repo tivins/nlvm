@@ -9,11 +9,31 @@ pub struct SourceFile {
     /// Fully-qualified names brought into scope by `use ns.path.Name [as
     /// Alias];` clauses, in source order.
     pub uses: Vec<UseDecl>,
+    /// `typedef Type Name;` declarations, in source order — specs.md §
+    /// Typedef. Parsed after `uses` and before the file's single
+    /// class/interface/enum item (matching every example in specs.md, which
+    /// always writes typedefs immediately after the imports and before the
+    /// type they annotate). Consumed and erased by `nl_syntax::typedef::expand`
+    /// before `nl-sema`/`nl-codegen` ever see the file — see that module's
+    /// doc comment for why a typedef-only file (no class/interface/enum) is
+    /// not supported, a simplification consistent with this parser's
+    /// existing "one item per file" rule.
+    pub typedefs: Vec<TypedefDecl>,
     pub item: SourceItem,
     /// Origin path for diagnostics (`nlc -l`/linter output, `file:line: ...`)
     /// — the path passed to `parse_source_file`, or a synthetic marker like
     /// `"<prelude>"` for built-in files (see `nl_syntax::prelude`).
     pub path: String,
+}
+
+/// One `typedef Type Name;` declaration — specs.md § Typedef. `name` is
+/// scoped to the declaring file's namespace: any other file in the same
+/// namespace may reference it by its simple name, exactly like an
+/// un-`use`-imported same-namespace class (see `nl_syntax::typedef`).
+#[derive(Debug, Clone, PartialEq)]
+pub struct TypedefDecl {
+    pub ty: Type,
+    pub name: String,
 }
 
 /// A single `use` clause. `path` is the dotted FQCN (e.g.
@@ -114,6 +134,12 @@ pub struct FieldDecl {
 #[derive(Debug, Clone, PartialEq)]
 pub struct InterfaceDecl {
     pub name: String,
+    /// `interface Name extends Parent1, Parent2, ...` — compiler.md §
+    /// Interface inheritance. Simple names only (same rule as
+    /// `ClassDecl::extends`/`implements`), resolved to FQCNs by
+    /// `nl-sema`/`nl-codegen`'s own `class_table::import_map`. Empty for an
+    /// interface with no `extends` clause.
+    pub extends: Vec<String>,
     pub methods: Vec<MethodSig>,
     /// See `ClassDecl::decl_line`.
     pub decl_line: u32,
@@ -289,14 +315,18 @@ pub enum StmtKind {
     },
     /// `for ([const] auto item : collection)` / `for ([const] T item :
     /// collection)` — specs.md § Loops. `ty` is `None` for `auto` (the
-    /// element type is deduced from the collection). `const` on the loop
-    /// variable is parsed and discarded, like `const` everywhere else in
-    /// this implementation (const-correctness is out of scope — PLAN.md).
+    /// element type is deduced from the collection). `is_const` records an
+    /// explicit `const` on the loop variable — compiler.md § For-each loop
+    /// in const context, E039: makes the loop variable non-modifiable
+    /// regardless of whether the iterated collection is itself read-only
+    /// (which already implies the same restriction on its own — see
+    /// `nl_sema::checker`'s `is_readonly_collection`).
     ForEach {
         ty: Option<Type>,
         var: String,
         iterable: Expr,
         body: Block,
+        is_const: bool,
     },
     Break,
     Continue,
@@ -313,6 +343,32 @@ pub enum StmtKind {
         catches: Vec<CatchClause>,
         finally: Option<Block>,
     },
+    /// `switch (subject) { case v1: ... case v2: ... default: ... }` —
+    /// specs.md § Switch/Match, "fall-through" semantics: without an
+    /// explicit `break`, execution continues into the next `case`'s body.
+    /// Unlike `Expr::Match`, this is a statement (no value, no
+    /// exhaustiveness requirement) and its cases run as one flat sequence —
+    /// `nl-codegen` compiles it as a single-iteration loop so `break`
+    /// reuses the same jump-to-end mechanism as a loop's `break` (`continue`
+    /// inside a `switch` is not special-cased: it still targets the nearest
+    /// enclosing *loop*, per the same C-like convention this fall-through
+    /// design otherwise follows). `default`, if present, may appear anywhere
+    /// among `cases` in source order (matching where the user wrote it —
+    /// fall-through means position matters); `nl-codegen` does not require
+    /// it to be last.
+    Switch {
+        subject: Expr,
+        cases: Vec<SwitchCase>,
+    },
+}
+
+/// One `case value:` or `default:` arm of a `Stmt::Switch` — `value: None`
+/// marks the `default` arm. `body` holds every statement up to (but not
+/// including) the next `case`/`default` label or the closing `}`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SwitchCase {
+    pub value: Option<Expr>,
+    pub body: Block,
 }
 
 /// One `catch (Type name) { ... }` clause of a `Stmt::Try` — specs.md §

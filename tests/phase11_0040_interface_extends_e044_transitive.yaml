@@ -1,0 +1,24 @@
+---
+title: "interface extends — E044 const-correctness propagates through an extended interface's inherited methods, not just the directly-implemented one"
+file_separator: "#NLFILE"
+expected_compile_error: "E044"
+---
+
+#NLFILE phase11/ifaceextendse044/Resource.nl
+namespace phase11.ifaceextendse044;
+interface Resource extends Stringable {
+	public string name() const;
+}
+
+#NLFILE phase11/ifaceextendse044/Widget.nl
+namespace phase11.ifaceextendse044;
+class Widget implements Resource {
+	public construct() {}
+	public string name() const { return "widget"; }
+	// Inherited from Stringable (via Resource extends Stringable) but not
+	// declared const here — must be rejected as E044, same as if Widget had
+	// implemented Stringable directly.
+	public string toString() {
+		return "Widget";
+	}
+}

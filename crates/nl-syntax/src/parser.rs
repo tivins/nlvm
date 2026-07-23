@@ -86,9 +86,29 @@ impl Parser {
         }
     }
 
+    /// compiler.md § Reserved keywords, E030 — every keyword in
+    /// specs.md § Keywords (plus `undefined`) is already unusable as an
+    /// identifier purely by construction: the lexer classifies it as a
+    /// `Keyword` token, never an `Ident`, so it can never reach any of the
+    /// "declare/reference a name" positions this function guards (variable,
+    /// method, field, class, param names, ...) without going through here
+    /// first. This is where that rejection is given the documented E030
+    /// wording, in place of a generic "expected identifier" parse error —
+    /// see `IMPLEMENTATION_STATUS.md` for why E030 stays a `SyntaxError`
+    /// (raised before `nl-sema` ever runs) rather than a `SemaError` variant
+    /// with its own code: the condition can never survive parsing to reach
+    /// semantic analysis.
     fn eat_ident(&mut self) -> Result<String, SyntaxError> {
         match self.bump().kind {
             TokenKind::Ident(s) => Ok(s),
+            TokenKind::Keyword(kw) => Err(SyntaxError::Parse(
+                format!(
+                    "E030 — '{}' is a reserved keyword and cannot be used as an identifier",
+                    kw.as_str()
+                ),
+                self.line(),
+                self.col(),
+            )),
             other => Err(SyntaxError::Parse(
                 format!("expected identifier, found {other:?}"),
                 self.line(),
@@ -145,6 +165,19 @@ impl Parser {
             });
         }
 
+        // specs.md § Typedef — `typedef Type Name;`, zero or more, always
+        // before the file's single class/interface/enum (matching every
+        // example in specs.md). Expanded away by `nl_syntax::typedef::expand`
+        // before `nl-sema`/`nl-codegen` ever run.
+        let mut typedefs = Vec::new();
+        while self.is_keyword(Keyword::Typedef) {
+            self.bump();
+            let ty = self.parse_type()?;
+            let name = self.eat_ident()?;
+            self.eat_punct(Punct::Semi)?;
+            typedefs.push(TypedefDecl { ty, name });
+        }
+
         // specs.md § Readonly, "Modifier order": `[abstract | final] class
         // [readonly] Name` — `abstract`/`final` precede `class` itself (and
         // any `template <...>` prefix). Both are accepted here (rather than
@@ -192,6 +225,7 @@ impl Parser {
         Ok(SourceFile {
             namespace,
             uses,
+            typedefs,
             item,
             path: self.path.clone(),
         })
@@ -263,6 +297,21 @@ impl Parser {
         // the class-body mechanism above) to get the covariant signature
         // specs.md describes.
         self.current_class = Some("Self".to_string());
+        // compiler.md § Interface inheritance — `interface Name extends
+        // Parent1, Parent2, ...`. Simple names only, like
+        // `parse_class_decl`'s own `extends`/`implements`.
+        let mut extends = Vec::new();
+        if self.is_keyword(Keyword::Extends) {
+            self.bump();
+            loop {
+                extends.push(self.eat_ident()?);
+                if self.is_punct(Punct::Comma) {
+                    self.bump();
+                } else {
+                    break;
+                }
+            }
+        }
         self.eat_punct(Punct::LBrace)?;
         let mut methods = Vec::new();
         while !self.is_punct(Punct::RBrace) {
@@ -295,6 +344,7 @@ impl Parser {
         self.eat_punct(Punct::RBrace)?;
         Ok(InterfaceDecl {
             name,
+            extends,
             methods,
             decl_line,
         })
@@ -1093,6 +1143,9 @@ impl Parser {
         if self.is_keyword(Keyword::For) {
             return self.parse_for_stmt();
         }
+        if self.is_keyword(Keyword::Switch) {
+            return self.parse_switch_stmt();
+        }
         if self.is_keyword(Keyword::Break) {
             self.bump();
             self.eat_punct(Punct::Semi)?;
@@ -1299,9 +1352,12 @@ impl Parser {
     /// `self.pos`); anything after the committing `:` reports real errors.
     fn try_parse_foreach_header(&mut self) -> Result<Option<Stmt>, SyntaxError> {
         let line = self.line();
-        if self.is_keyword(Keyword::Const) {
+        let is_const = if self.is_keyword(Keyword::Const) {
             self.bump();
-        }
+            true
+        } else {
+            false
+        };
         let ty = if self.is_keyword(Keyword::Auto) {
             self.bump();
             None
@@ -1327,6 +1383,7 @@ impl Parser {
                 var,
                 iterable,
                 body,
+                is_const,
             },
             line,
         }))
@@ -1408,6 +1465,48 @@ impl Parser {
         let body = self.parse_block()?;
         Ok(Stmt {
             kind: StmtKind::While { cond, body },
+            line,
+        })
+    }
+
+    /// `switch (subject) { case v1: stmts... case v2: stmts... default:
+    /// stmts... }` — specs.md § Switch/Match. Each `case`/`default` label
+    /// starts a new `SwitchCase`; the statements up to the next label (or
+    /// the closing `}`) become its `body` — fall-through is a codegen
+    /// property (no `break` inserted implicitly), not something the parser
+    /// needs to model. `case` values are parsed as expressions (not
+    /// restricted to literals here — `nl-sema`/`nl-codegen` reject anything
+    /// that isn't a compile-time constant when that becomes relevant, same
+    /// division of labor as `Expr::Match`'s arms).
+    fn parse_switch_stmt(&mut self) -> Result<Stmt, SyntaxError> {
+        let line = self.line();
+        self.eat_keyword(Keyword::Switch)?;
+        self.eat_punct(Punct::LParen)?;
+        let subject = self.parse_expr()?;
+        self.eat_punct(Punct::RParen)?;
+        self.eat_punct(Punct::LBrace)?;
+        let mut cases = Vec::new();
+        while !self.is_punct(Punct::RBrace) {
+            let value = if self.is_keyword(Keyword::Default) {
+                self.bump();
+                None
+            } else {
+                self.eat_keyword(Keyword::Case)?;
+                Some(self.parse_expr()?)
+            };
+            self.eat_punct(Punct::Colon)?;
+            let mut body = Vec::new();
+            while !self.is_keyword(Keyword::Case)
+                && !self.is_keyword(Keyword::Default)
+                && !self.is_punct(Punct::RBrace)
+            {
+                body.push(self.parse_stmt()?);
+            }
+            cases.push(SwitchCase { value, body });
+        }
+        self.eat_punct(Punct::RBrace)?;
+        Ok(Stmt {
+            kind: StmtKind::Switch { subject, cases },
             line,
         })
     }
@@ -2130,5 +2229,25 @@ fn to_lvalue(expr: Expr, line: u32, col: u32) -> Result<LValue, SyntaxError> {
             line,
             col,
         )),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// compiler.md § Reserved keywords — E030's exact documented wording is
+    /// never observable through `nl-test-runner`'s YAML fixtures (its
+    /// `expected_parse_error: true` only checks that parsing failed, not
+    /// what the message says — see `phase11_0090_reserved_keyword_as_identifier.yaml`
+    /// for that half of the coverage), so the message text itself is
+    /// asserted here instead.
+    #[test]
+    fn reserved_keyword_as_identifier_reports_e030() {
+        let src = "namespace t;\nclass Main {\n\tpublic static int main(string[] args) {\n\t\tauto class = 5;\n\t\treturn 0;\n\t}\n}\n";
+        let err = crate::parse_source_file(src, "Main.nl").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            msg.contains("E030 — 'class' is a reserved keyword and cannot be used as an identifier"),
+            "unexpected message: {msg}"
+        );
     }
 }

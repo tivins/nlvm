@@ -1,8 +1,6 @@
 # TODO
 
-## Tasks
-
-* Implement `typedef`.
+## TASKS
 
 ## DONE
 

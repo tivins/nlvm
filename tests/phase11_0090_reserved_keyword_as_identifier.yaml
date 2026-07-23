@@ -1,0 +1,14 @@
+---
+title: "E030 — a reserved keyword cannot be used as an identifier (rejected at parse time, see nl_syntax::parser::eat_ident for the exact E030-worded message)"
+file_separator: "#NLFILE"
+expected_parse_error: true
+---
+
+#NLFILE phase11/reservedkeyword/Main.nl
+namespace phase11.reservedkeyword;
+class Main {
+	public static int main(string[] args) {
+		auto class = 5;
+		return 0;
+	}
+}

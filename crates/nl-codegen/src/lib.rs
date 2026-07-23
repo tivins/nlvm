@@ -40,6 +40,12 @@ pub fn compile_program(files: &[SourceFile]) -> Result<Vec<Module>, CodegenError
     let mut unexpanded = nl_syntax::prelude::files();
     unexpanded.extend(files.to_vec());
 
+    // specs.md § Typedef — alias expansion runs first, same ordering
+    // (and same reasoning) as `nl_sema::check_compile_with_warnings`'s
+    // identical two-step expansion, so both crates always agree on the
+    // expanded program.
+    let unexpanded = nl_syntax::typedef::expand(unexpanded);
+
     // Template classes (specs.md § Template class) are expanded into
     // ordinary monomorphized classes before anything else sees them — see
     // nl_syntax::monomorphize.
@@ -99,13 +105,18 @@ fn compile_file(
                 }
                 None => 0,
             };
-            let interfaces = class
+            // compiler.md § Interface inheritance — flattened to include
+            // every interface each directly-`implements`-ed one transitively
+            // `extends`, not just the names written after `implements`
+            // itself (see `class_table::interface_closure`).
+            let direct_interface_fqcns: Vec<String> = class
                 .implements
                 .iter()
-                .map(|name| {
-                    let iface_fqcn = imports.get(name).cloned().unwrap_or_else(|| name.clone());
-                    cp.add_class(&iface_fqcn)
-                })
+                .map(|name| imports.get(name).cloned().unwrap_or_else(|| name.clone()))
+                .collect();
+            let interfaces = class_table::interface_closure(classes, &direct_interface_fqcns)
+                .into_iter()
+                .map(|iface_fqcn| cp.add_class(&iface_fqcn))
                 .collect();
 
             let fields = class

@@ -1,0 +1,60 @@
+---
+title: "typedef — simple primitive alias and array alias, interchangeable with their underlying types, visible unqualified from another file in the same namespace (specs.md § Typedef, Basic usage / With arrays)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  John
+  30
+  1 2 3
+expected_stderr: ""
+---
+
+#NLFILE phase11/typedefbasic/Person.nl
+namespace phase11.typedefbasic;
+
+typedef string Name;
+typedef int Age;
+typedef int[] NumberList;
+
+class Person {
+	public Name firstName;
+	public Age age;
+
+	public construct(Name firstName, Age age) {
+		this.firstName = firstName;
+		this.age = age;
+	}
+}
+
+#NLFILE phase11/typedefbasic/Main.nl
+namespace phase11.typedefbasic;
+
+class Main {
+	// `NumberList`/`Name`/`Age` are declared in Person.nl, not this file —
+	// same-namespace visibility, no `use` needed (specs.md § Typedef:
+	// "Typedefs are scoped to their namespace").
+	public static void sum(NumberList values) {
+		string out = "";
+		for (int i = 0; i < values.length(); i++) {
+			if (i > 0) {
+				out = out + " ";
+			}
+			out = out + system.Int.toString(values[i]);
+		}
+		system.Out.println(out);
+	}
+
+	public static int main(string[] args) {
+		Person p = new Person("John", 30);
+		// Typedef and original type are interchangeable — assigning a `Name`
+		// field into a plain `string` local, and vice versa.
+		string alsoName = p.firstName;
+		system.Out.println(alsoName);
+		int sameAge = p.age;
+		system.Out.println(system.Int.toString(sameAge));
+
+		NumberList nums = new int[]{1, 2, 3};
+		sum(nums);
+		return 0;
+	}
+}

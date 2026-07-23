@@ -1,0 +1,44 @@
+---
+title: "switch/case — fall-through without break, break stops it, multiple case labels sharing one body"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: |
+  20
+  111
+expected_stderr: ""
+---
+
+#NLFILE phase11/switchbasic/Main.nl
+namespace phase11.switchbasic;
+class Main {
+	public static int main(string[] args) {
+		int value = 2;
+		int result = 0;
+		switch (value) {
+			case 1:
+				result = 10;
+				break;
+			case 2:
+			case 3:
+				result = 20;
+				break;
+			default:
+				result = 99;
+				break;
+		}
+		system.Out.println(system.Int.toString(result));
+
+		// No break anywhere: falls through every case from the first match.
+		int total = 0;
+		switch (1) {
+			case 1:
+				total = total + 1;
+			case 2:
+				total = total + 10;
+			case 3:
+				total = total + 100;
+		}
+		system.Out.println(system.Int.toString(total));
+		return 0;
+	}
+}

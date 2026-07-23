@@ -1,0 +1,17 @@
+---
+title: "for (const auto item : collection) — explicit const on the loop variable is now enforced (E039), even over a collection that isn't itself read-only"
+file_separator: "#NLFILE"
+expected_compile_error: "E039"
+---
+
+#NLFILE phase11/foreachconst/Main.nl
+namespace phase11.foreachconst;
+class Main {
+	public static int main(string[] args) {
+		int[] numbers = new int[]{1, 2, 3};
+		for (const auto n : numbers) {
+			n = n + 1;
+		}
+		return 0;
+	}
+}

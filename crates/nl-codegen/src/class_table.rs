@@ -169,6 +169,16 @@ pub fn resolve_positional_args(
 pub struct ClassInfo {
     /// Resolved FQCN of the direct superclass (`extends`), if any.
     pub extends: Option<String>,
+    /// Resolved FQCNs of directly implemented interfaces (a class) or
+    /// directly extended parent interfaces (an interface) — compiler.md §
+    /// Interface inheritance. Reuses one field for both, like
+    /// `nl_sema::class_table::ClassInfo::implements` (see that field's doc
+    /// comment for why): used by `interface_closure` to flatten the whole
+    /// transitive interface set into a class's compiled `Module.interfaces`
+    /// list, so `nl_vm::interpreter::is_instance_of`'s exact-FQCN interface
+    /// scan (no interface-`extends` awareness of its own) still resolves
+    /// `instanceof`/upcasts correctly against an interface's ancestors.
+    pub implements: Vec<String>,
     pub fields: Vec<FieldInfo>,
     pub ctors: Vec<CtorInfo>,
     pub methods: Vec<MethodInfo>,
@@ -319,8 +329,14 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
                     .extends
                     .as_ref()
                     .map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()));
+                let implements = class
+                    .implements
+                    .iter()
+                    .map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()))
+                    .collect();
                 ClassInfo {
                     extends,
+                    implements,
                     fields,
                     ctors,
                     methods,
@@ -345,8 +361,16 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
                         is_static: false,
                     })
                     .collect();
+                // compiler.md § Interface inheritance — `extends` parents,
+                // stored in `implements` (see that field's doc comment).
+                let implements = iface
+                    .extends
+                    .iter()
+                    .map(|n| imports.get(n).cloned().unwrap_or_else(|| n.clone()))
+                    .collect();
                 ClassInfo {
                     extends: None,
+                    implements,
                     fields: Vec::new(),
                     ctors: Vec::new(),
                     methods,
@@ -357,6 +381,35 @@ pub fn build_class_table(files: &[SourceFile]) -> HashMap<String, ClassInfo> {
         table.insert(fqcn, info);
     }
     table
+}
+
+/// Every interface FQCN in `start`'s (a class's directly-`implements`-ed
+/// interfaces) transitive `extends` closure, flattened — compiler.md §
+/// Interface inheritance: "an implementing class can be upcast to any
+/// interface in the hierarchy, and `instanceof` returns true for all of
+/// them". Used to populate a class's compiled `Module.interfaces` (see
+/// `compile_file` in `lib.rs`) with every ancestor interface, not just the
+/// ones written directly after `implements` — `nl_vm::interpreter`'s
+/// `is_instance_of`/`implements_interface` only ever does an exact-FQCN scan
+/// of that list, with no interface-`extends` awareness of its own, so the
+/// flattening has to happen here, at compile time.
+pub fn interface_closure<'a>(
+    classes: &'a HashMap<String, ClassInfo>,
+    start: impl IntoIterator<Item = &'a String>,
+) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut queue: Vec<String> = start.into_iter().cloned().collect();
+    let mut out = Vec::new();
+    while let Some(fqcn) = queue.pop() {
+        if !seen.insert(fqcn.clone()) {
+            continue;
+        }
+        out.push(fqcn.clone());
+        if let Some(info) = classes.get(&fqcn) {
+            queue.extend(info.implements.iter().cloned());
+        }
+    }
+    out
 }
 
 /// Best-effort overload resolution: matches by argument count only. Good

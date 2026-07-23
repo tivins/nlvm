@@ -267,6 +267,14 @@ pub(crate) struct LoopCtx {
     /// wrapping the loop itself (compiler.md's `finally` duplication rule
     /// only fires for exits that actually leave the protected region).
     pub finally_depth: usize,
+    /// `true` for a `switch` (rather than a real loop) — specs.md §
+    /// Switch/Match: `break` targets the nearest enclosing construct of
+    /// either kind (so a `break` inside a `switch` closes the switch, not
+    /// an outer loop), but `continue` always skips past `switch` frames to
+    /// the nearest real loop (a `switch` has no iteration to continue into
+    /// — same C-like convention the fall-through design otherwise follows).
+    /// See `Emitter::compile_stmt`'s `StmtKind::Continue` arm.
+    pub is_switch: bool,
 }
 
 pub struct Emitter<'a> {

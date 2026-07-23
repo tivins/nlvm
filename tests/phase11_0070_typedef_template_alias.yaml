@@ -1,0 +1,49 @@
+---
+title: "typedef with templates — typedef Box<int> IntBox; used as a local variable type, field type, and 'new' target (specs.md § Typedef advanced usage, Typedef with templates)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "20 99"
+---
+
+#NLFILE phase11/typedeftemplate/Box.nl
+namespace phase11.typedeftemplate;
+template <type T>
+class Box {
+	private T value;
+	public construct(T value) {
+		this.value = value;
+	}
+	public T get() {
+		return this.value;
+	}
+	public void set(T value) {
+		this.value = value;
+	}
+}
+
+#NLFILE phase11/typedeftemplate/Holder.nl
+namespace phase11.typedeftemplate;
+
+typedef Box<int> IntBox;
+
+class Holder {
+	public IntBox box;
+
+	public construct(IntBox box) {
+		this.box = box;
+	}
+}
+
+#NLFILE phase11/typedeftemplate/Main.nl
+namespace phase11.typedeftemplate;
+class Main {
+	public static int main(string[] args) {
+		IntBox b = new IntBox(20);
+		system.Out.print(system.Int.toString(b.get()));
+		system.Out.print(" ");
+
+		Holder h = new Holder(new IntBox(99));
+		system.Out.print(system.Int.toString(h.box.get()));
+		return 0;
+	}
+}

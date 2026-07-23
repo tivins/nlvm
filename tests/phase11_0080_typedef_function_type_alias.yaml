@@ -1,0 +1,41 @@
+---
+title: "typedef with function types — typedef (int, int) => int BinaryOperation; usable as a parameter type and a variable type (specs.md § Typedef with function types)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "8 15"
+---
+
+#NLFILE phase11/typedeffn/Calculator.nl
+namespace phase11.typedeffn;
+
+typedef (int, int) => int BinaryOperation;
+
+class Calculator {
+	private int value1;
+	private int value2;
+
+	public construct(int value1, int value2) {
+		this.value1 = value1;
+		this.value2 = value2;
+	}
+
+	public int compute(BinaryOperation operation) {
+		return operation(this.value1, this.value2);
+	}
+}
+
+#NLFILE phase11/typedeffn/Main.nl
+namespace phase11.typedeffn;
+class Main {
+	public static int main(string[] args) {
+		auto calc = new Calculator(5, 3);
+		int sum = calc.compute((int a, int b) => a + b);
+		system.Out.print(system.Int.toString(sum));
+		system.Out.print(" ");
+
+		BinaryOperation multiply = (int a, int b) => a * b;
+		int product = calc.compute(multiply);
+		system.Out.print(system.Int.toString(product));
+		return 0;
+	}
+}

@@ -46,24 +46,35 @@ pub fn check_compile_with_warnings(
     // input — it wouldn't be reachable at all if expansion ran on `files`
     // alone first.
     let mut unexpanded = nl_syntax::prelude::files();
+    let prelude_len = unexpanded.len();
     unexpanded.extend(files.to_vec());
+
+    // specs.md § Typedef — alias expansion runs first so a typedef aliasing
+    // a template instantiation (`typedef Vector<int> IntVector;`) is fully
+    // rewritten into a real `Type::Generic` site before
+    // `nl_syntax::monomorphize` ever looks for those. Prelude files never
+    // declare a typedef themselves, but a user typedef can still alias a
+    // prelude class, so expansion runs over the combined list.
+    let unexpanded = nl_syntax::typedef::expand(unexpanded);
 
     // Template classes (specs.md § Template class) are expanded into
     // ordinary monomorphized classes before anything else sees them — see
     // nl_syntax::monomorphize.
-    let all_files = nl_syntax::monomorphize::expand(unexpanded);
+    let all_files = nl_syntax::monomorphize::expand(unexpanded.clone());
 
     check_duplicate_classes(&all_files)?;
     for file in &all_files {
         check_duplicate_imports(file, &all_files)?;
     }
     let classes = class_table::build_class_table(&all_files);
-    // Must run against the *original*, pre-expansion `files` — by this point
+    // Must run against the *typedef-expanded but pre-monomorphize* files
+    // (mirrors `unexpanded[prelude_len..]`, i.e. the caller's own `files`
+    // with typedefs already erased) — by this point
     // `nl_syntax::monomorphize::expand` has already rewritten every
     // `Type::Generic`/`new T<...>(...)` site away, but `classes` (built from
     // the expanded program) still has everything needed to resolve whether a
     // concrete type argument satisfies its bound.
-    check_template_bounds(files, &classes)?;
+    check_template_bounds(&unexpanded[prelude_len..], &classes)?;
     let mut warnings = Vec::new();
     for file in &all_files {
         warnings.extend(checker::check_source_file(file, &all_files, &classes)?);

@@ -5,6 +5,18 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0]
+
+### Added
+- `typedef Type Name;` (specs.md § Typedef): namespace-scoped compile-time type aliases, usable anywhere a type is expected — including as a `new` target for a template alias (`typedef Vector<int> IntVector; new IntVector(...)`) and for function-type aliases (`typedef (int, int) => int BinaryOperation;`). Fully erased before semantic analysis/codegen, so aliases are completely interchangeable with their underlying type.
+- `switch`/`case`/`default` statement (specs.md § Switch/Match) with C-like fall-through semantics: execution continues into the next `case` without an explicit `break`. `break` exits the nearest `switch` or loop; `continue` inside a `switch` still targets the nearest enclosing loop.
+- `interface A extends B, C` (interface inheritance, compiler.md § Interface inheritance): an interface may extend any number of parent interfaces, inheriting all their method declarations. `instanceof`/upcast and the const-correctness check (E044) both now work transitively through the whole interface hierarchy, not just directly-implemented interfaces.
+- `for (const auto item : collection)` — an explicit `const` on a for-each loop variable is now enforced (E039), independent of whether the iterated collection is itself read-only.
+
+### Fixed
+- Assigning an object to an interface-typed variable/field/parameter (`Disposable d = someCloseable;`) now correctly recognizes an interface implemented indirectly through another implemented interface's own `extends` chain — previously only directly-`implements`-ed interfaces were recognized at assignment sites (E004), even though `instanceof` already handled deeper class hierarchies correctly.
+- Using a reserved keyword where an identifier is expected now reports the documented `E030` message instead of a generic parse error.
+
 ## [0.10.0]
 
 ### Added
