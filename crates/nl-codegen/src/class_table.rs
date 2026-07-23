@@ -412,20 +412,140 @@ pub fn interface_closure<'a>(
     out
 }
 
-/// Best-effort overload resolution: matches by argument count only. Good
-/// enough while the only overloads in scope (constructor chaining) are
-/// distinguished by arity; ambiguous same-arity overloads pick the first
-/// declared, which is a known, documented limitation of this phase.
-pub fn find_ctor<'c>(
+/// Whether `sub` is `sup` itself or (transitively) extends it — independent
+/// copy of `nl_sema::class_table::is_subclass_or_same` (this crate doesn't
+/// depend on `nl-sema` — see this module's doc comment).
+pub fn is_subclass_or_same(classes: &HashMap<String, ClassInfo>, sub: &str, sup: &str) -> bool {
+    let mut current = sub.to_string();
+    loop {
+        if current == sup {
+            return true;
+        }
+        match classes.get(&current).and_then(|c| c.extends.clone()) {
+            Some(parent) => current = parent,
+            None => return false,
+        }
+    }
+}
+
+/// Whether `fqcn` (transitively, via `extends`) implements interface
+/// `target` — independent copy of
+/// `nl_sema::class_table::implements_interface`, built on `interface_closure`
+/// (already flattens an interface's own `extends` ancestors into
+/// `ClassInfo::implements`, see that field's doc comment).
+pub fn implements_interface(classes: &HashMap<String, ClassInfo>, fqcn: &str, target: &str) -> bool {
+    let mut current = fqcn;
+    loop {
+        let Some(info) = classes.get(current) else {
+            return false;
+        };
+        if interface_closure(classes, &info.implements)
+            .iter()
+            .any(|i| i == target)
+        {
+            return true;
+        }
+        match info.extends.as_deref() {
+            Some(parent) => current = parent,
+            None => return false,
+        }
+    }
+}
+
+/// How well a call argument's type matches a declared parameter, for
+/// overload resolution — independent copy of
+/// `nl_sema::class_table::overload_param_score`'s rule (`Some(0)` exact,
+/// `Some(1)` compatible via numeric widening/subtyping/a nullable target,
+/// `None` incompatible; `arg = None` — this pass couldn't confidently type
+/// that argument without emitting bytecode, see `Emitter::overload_arg_ty`
+/// — always scores `Some(0)`, never disqualifying a candidate it can't
+/// actually evaluate). Must stay in lockstep with the nl-sema copy: see
+/// `Emitter::overload_arg_ty`'s doc comment for why.
+fn overload_param_score(classes: &HashMap<String, ClassInfo>, arg: Option<&Type>, param: &Type) -> Option<u32> {
+    let arg = arg?;
+    if arg == param {
+        return Some(0);
+    }
+    if matches!(arg, Type::NullT) {
+        let nullable = matches!(param, Type::Union(members) if members.iter().any(|m| matches!(m, Type::NullT)));
+        return if nullable { Some(1) } else { None };
+    }
+    match (arg, param) {
+        (Type::Named(from), Type::Named(to)) => {
+            if is_subclass_or_same(classes, from, to) || implements_interface(classes, from, to) {
+                Some(1)
+            } else {
+                None
+            }
+        }
+        (Type::Int | Type::Float | Type::Byte, Type::Int | Type::Float | Type::Byte) => Some(1),
+        _ => None,
+    }
+}
+
+/// Picks the best-matching candidate among `candidates` (already filtered to
+/// same-name/arity-compatible overloads by the caller) — independent copy of
+/// `nl_sema::class_table::best_overload`'s tie-breaking rule (first declared
+/// wins a tie or an all-incompatible outcome; trivial passthrough for the
+/// overwhelmingly common single-candidate case).
+fn best_overload<'c, T>(
+    classes: &HashMap<String, ClassInfo>,
+    candidates: &[&'c T],
+    params_of: fn(&T) -> &[Type],
+    arg_tys: &[Option<Type>],
+) -> Option<&'c T> {
+    if candidates.len() <= 1 {
+        return candidates.first().copied();
+    }
+    let mut best: Option<(usize, u32)> = None;
+    for (idx, cand) in candidates.iter().enumerate() {
+        let params = params_of(cand);
+        let mut total = 0u32;
+        let mut compatible = true;
+        for (i, param) in params.iter().enumerate() {
+            let arg = arg_tys.get(i).and_then(|o| o.as_ref());
+            match overload_param_score(classes, arg, param) {
+                Some(score) => total += score,
+                None => {
+                    compatible = false;
+                    break;
+                }
+            }
+        }
+        if !compatible {
+            continue;
+        }
+        if best.is_none_or(|(_, best_score)| total < best_score) {
+            best = Some((idx, total));
+        }
+    }
+    match best {
+        Some((idx, _)) => Some(candidates[idx]),
+        None => candidates.first().copied(),
+    }
+}
+
+/// Arity-compatible constructor resolution, picking the best-matching
+/// overload by `arg_tys` rather than just the first declared — the
+/// codegen-side half of the
+/// "arity-only" fix (see `nl_sema::class_table::find_ctor_overload`, which
+/// this must always agree with: nl-sema already validated the call against
+/// whichever overload *it* picked, so if this picks a different one here,
+/// the emitted bytecode targets a method nl-sema never actually checked
+/// this call against).
+pub fn find_ctor_overload<'c>(
     classes: &'c HashMap<String, ClassInfo>,
     fqcn: &str,
     argc: usize,
+    arg_tys: &[Option<Type>],
 ) -> Option<&'c CtorInfo> {
-    classes
+    let candidates: Vec<&CtorInfo> = classes
         .get(fqcn)?
         .ctors
         .iter()
-        .find(|c| arity_in_range(required_count(&c.defaults), c.params.len(), argc))
+        .filter(|c| arity_in_range(required_count(&c.defaults), c.params.len(), argc))
+        .collect();
+    best_overload(classes, &candidates, |c| &c.params, arg_tys)
 }
 
 /// Walks `fqcn`'s `extends` chain, so a method declared on an ancestor class
@@ -442,6 +562,34 @@ pub fn find_method<'c>(
         if let Some(m) = info.methods.iter().find(|m| {
             m.name == name && arity_in_range(required_count(&m.defaults), m.params.len(), argc)
         }) {
+            return Some(m);
+        }
+        current = info.extends.as_deref()?;
+    }
+}
+
+/// Like `find_method`, but picks the best-matching overload by `arg_tys`
+/// instead of just the first declared at each class level — see
+/// `find_ctor_overload`'s doc comment for why this must always agree with
+/// `nl_sema::class_table::find_method_owner_overload`.
+pub fn find_method_overload<'c>(
+    classes: &'c HashMap<String, ClassInfo>,
+    fqcn: &str,
+    name: &str,
+    argc: usize,
+    arg_tys: &[Option<Type>],
+) -> Option<&'c MethodInfo> {
+    let mut current = fqcn;
+    loop {
+        let info = classes.get(current)?;
+        let candidates: Vec<&MethodInfo> = info
+            .methods
+            .iter()
+            .filter(|m| {
+                m.name == name && arity_in_range(required_count(&m.defaults), m.params.len(), argc)
+            })
+            .collect();
+        if let Some(m) = best_overload(classes, &candidates, |m| &m.params, arg_tys) {
             return Some(m);
         }
         current = info.extends.as_deref()?;

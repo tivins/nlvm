@@ -5,6 +5,15 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0]
+
+### Added
+- Prefix `++`/`--` (`++x`, `--x`) is now parsed and compiled — previously only the postfix forms existed. Both prefix and postfix are now real expressions with the value specs.md § Operator precedence documents: postfix evaluates to the pre-mutation value, prefix to the post-mutation one, for a plain `int` local, a `ref int` parameter, and a closure-captured-and-mutated `int` local alike. An overloaded `operator++`/`operator--` on an object still follows specs.md's "Postfix note": both forms evaluate to the same mutated object reference. The target is still restricted to a plain variable name (`obj.field++`/array-element `++`/`--` remain unsupported); `++`/`--` applied to anything else is now a clear parse-time error instead of silently misparsing or failing deep in codegen.
+
+### Fixed
+- Method/constructor overload resolution now considers argument types, not just argument count. Previously, when two overloads of the same method or constructor shared the same arity (e.g. `show(int)` and `show(string)`), the compiler always picked whichever was declared first — regardless of the actual argument's type — so calling the "wrong-positioned" overload either failed to compile with a confusing type error or, in rarer cases, silently compiled a call against the wrong method. Resolution now scores each arity-compatible candidate by how well its parameters match the call's argument types (exact match, then numeric widening/subclass/interface compatibility) and picks the best match; ties still fall back to the first declared, a documented limitation. Covers `new T(...)`, `this(...)`/`super(...)` constructor delegation (specs.md § Constructor chaining), and instance/static method calls.
+- `this(...)` constructor-delegation cycle detection (E046) also resolved its target by arity only, which could report a false cycle for a same-arity overloaded constructor whose `this(...)` argument was a literal or one of the constructor's own parameters (the delegation target looked like it delegated to itself). It now uses the same argument-type-aware resolution for that common case.
+
 ## [0.11.2]
 
 ### Fixed

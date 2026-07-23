@@ -171,7 +171,7 @@ pub fn instance_signature(fqcn: &str, name: &str, argc: usize) -> Option<(Vec<Ty
 /// Constructor parameter types for native instance classes constructible
 /// via `new` directly (unlike `system.io.FileHandle`, only ever produced by
 /// `File.open`) — consulted by `Emitter::compile_new` before falling back
-/// to `class_table::find_ctor`, same precedence as
+/// to `class_table::find_ctor_overload`, same precedence as
 /// `native_generics::ctor_param_types`.
 pub fn ctor_param_types(fqcn: &str, argc: usize) -> Option<Vec<Type>> {
     match (fqcn, argc) {

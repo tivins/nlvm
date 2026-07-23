@@ -1,0 +1,30 @@
+---
+title: "specs.md § Constructor chaining: \"the target constructor is selected by overload resolution on the argument types\" — `Box` has two same-arity constructors (`int`, `string`); both `new Box(...)` and a `construct(int n) { this(\"literal\"); }` delegation resolve by the argument's type, not by picking the first declared"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "literal\nhello\n"
+---
+
+#NLFILE phase14/ctoroverload/Box.nl
+namespace phase14.ctoroverload;
+class Box {
+	public string label;
+	public construct(int n) {
+		this("literal");
+	}
+	public construct(string s) {
+		this.label = s;
+	}
+}
+
+#NLFILE phase14/ctoroverload/Main.nl
+namespace phase14.ctoroverload;
+class Main {
+	public static int main(string[] args) {
+		auto a = new Box(42);
+		auto b = new Box("hello");
+		system.Out.println(a.label);
+		system.Out.println(b.label);
+		return 0;
+	}
+}

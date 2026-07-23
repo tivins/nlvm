@@ -1,0 +1,16 @@
+---
+title: "Prefix `++`/`--` is restricted to a plain identifier target, like the existing postfix forms — `++y++` (prefix applied to a postfix-expression result) is rejected at parse time with a clear message rather than silently misparsed"
+file_separator: "#NLFILE"
+expected_parse_error: true
+---
+
+#NLFILE phase14/incrprefixerr/Main.nl
+namespace phase14.incrprefixerr;
+class Main {
+	public static int main(string[] args) {
+		int y = 3;
+		int z = ++y++;
+		system.Out.println(z);
+		return 0;
+	}
+}

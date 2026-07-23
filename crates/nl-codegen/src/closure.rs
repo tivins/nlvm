@@ -112,7 +112,11 @@ fn collect_expr(expr: &Expr, names: &mut HashSet<String>) {
         | Expr::NullLit
         | Expr::This
         | Expr::Super => {}
-        Expr::Ident(name) | Expr::PostIncr(name) | Expr::PostDecr(name) => {
+        Expr::Ident(name)
+        | Expr::PostIncr(name)
+        | Expr::PostDecr(name)
+        | Expr::PreIncr(name)
+        | Expr::PreDecr(name) => {
             names.insert(name.clone());
         }
         Expr::Assign(target, value) => {
@@ -366,7 +370,7 @@ fn scan_expr(expr: &Expr, captured: &mut HashSet<String>, mutated: &mut HashSet<
                     .filter(|n| !param_names.contains(n.as_str())),
             );
         }
-        Expr::PostIncr(name) | Expr::PostDecr(name) => {
+        Expr::PostIncr(name) | Expr::PostDecr(name) | Expr::PreIncr(name) | Expr::PreDecr(name) => {
             mutated.insert(name.clone());
         }
         Expr::IntLit(_)

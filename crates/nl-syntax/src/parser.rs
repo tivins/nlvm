@@ -1797,6 +1797,33 @@ impl Parser {
             let expr = self.parse_unary()?;
             return Ok(Expr::Unary(UnOp::Not, Box::new(expr)));
         }
+        // Prefix `++`/`--` — specs.md § Operator precedence, level 2. Like
+        // the postfix forms (`parse_primary`'s `Ident` arm), the target is
+        // restricted to a plain identifier: parse the operand at the same
+        // precedence level and require it to have parsed down to a bare
+        // `Expr::Ident`, rather than widening the AST to a general lvalue
+        // (field access, indexing) that no other part of the pipeline
+        // (closure capture analysis, monomorphize, typedef expansion) is
+        // set up to treat as a mutation target.
+        if self.is_punct(Punct::PlusPlus) || self.is_punct(Punct::MinusMinus) {
+            let is_incr = self.is_punct(Punct::PlusPlus);
+            let (line, col) = (self.line(), self.col());
+            self.bump();
+            let operand = self.parse_unary()?;
+            let Expr::Ident(name) = operand else {
+                let sym = if is_incr { "++" } else { "--" };
+                return Err(SyntaxError::Parse(
+                    format!("prefix '{sym}' can only be applied to a variable name"),
+                    line,
+                    col,
+                ));
+            };
+            return Ok(if is_incr {
+                Expr::PreIncr(name)
+            } else {
+                Expr::PreDecr(name)
+            });
+        }
         // `(T) expr` — specs.md § Operator precedence puts cast at the same
         // level as the unary operators above. Tried before falling through
         // to `parse_postfix` (which itself tries a closure before plain

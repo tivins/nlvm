@@ -1,0 +1,41 @@
+---
+title: "Overload resolution beyond arity: `Printer.show` has three same-arity (1 parameter) overloads (`int`, `string`, `Shape`) — each call site picks the overload matching its argument's actual static type, including a `Circle` argument (a `Shape` subclass) picking the `Shape` overload rather than the first-declared `int` one"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "int:42\nstring:hi\nshape:circle\n"
+---
+
+#NLFILE phase14/methodoverload/Shape.nl
+namespace phase14.methodoverload;
+class Shape {
+	public construct() {}
+	public string describe() { return "shape"; }
+}
+
+#NLFILE phase14/methodoverload/Circle.nl
+namespace phase14.methodoverload;
+class Circle extends Shape {
+	public construct() { super(); }
+	public string describe() { return "circle"; }
+}
+
+#NLFILE phase14/methodoverload/Printer.nl
+namespace phase14.methodoverload;
+class Printer {
+	public construct() {}
+	public string show(int x) { return "int:" + x; }
+	public string show(string x) { return "string:" + x; }
+	public string show(Shape x) { return "shape:" + x.describe(); }
+}
+
+#NLFILE phase14/methodoverload/Main.nl
+namespace phase14.methodoverload;
+class Main {
+	public static int main(string[] args) {
+		auto p = new Printer();
+		system.Out.println(p.show(42));
+		system.Out.println(p.show("hi"));
+		system.Out.println(p.show(new Circle()));
+		return 0;
+	}
+}

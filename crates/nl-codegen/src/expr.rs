@@ -4,8 +4,8 @@ use nl_bytecode::{ConstantPool, Opcode};
 use nl_syntax::ast::{Arg, BinOp, Expr, LValue, Type, UnOp};
 
 use crate::class_table::{
-    find_ctor, find_field, find_field_owner, find_method, find_operator_method, resolve_type,
-    ClassInfo, MethodInfo,
+    find_field, find_field_owner, find_method, find_operator_method, resolve_type, ClassInfo,
+    MethodInfo,
 };
 use crate::error::CodegenError;
 use crate::type_desc::{method_descriptor, type_descriptor};
@@ -869,8 +869,10 @@ impl<'a> Emitter<'a> {
             Expr::Index(target, index) => self.compile_index(target, index),
             Expr::InstanceOf(target, type_name) => self.compile_instanceof(target, type_name),
             Expr::Cast(ty, inner) => self.compile_cast(ty, inner),
-            Expr::PostIncr(name) => self.compile_incr(name, 1),
-            Expr::PostDecr(name) => self.compile_incr(name, -1),
+            Expr::PostIncr(name) => self.compile_incr(name, 1, false),
+            Expr::PostDecr(name) => self.compile_incr(name, -1, false),
+            Expr::PreIncr(name) => self.compile_incr(name, 1, true),
+            Expr::PreDecr(name) => self.compile_incr(name, -1, true),
             Expr::Unary(op, inner) => self.compile_unary(*op, inner),
             Expr::Binary(op, lhs, rhs) => self.compile_binary(*op, lhs, rhs),
             Expr::Match(subject, arms) => self.compile_match(subject, arms),
@@ -1492,7 +1494,18 @@ impl<'a> Emitter<'a> {
             })
     }
 
-    fn compile_incr(&mut self, name: &str, delta: i16) -> Result<ExprTy, CodegenError> {
+    /// `is_prefix` distinguishes the two expression values specs.md §
+    /// Operator precedence promises for `int`/boxed targets: postfix yields
+    /// the pre-mutation value, prefix yields the post-mutation one. Both
+    /// forms compile the plain-`int`/boxed-`int` cases with the *same*
+    /// sequence of ops, just reordered around the mutation (`Load`/`IInc`
+    /// swapped, or the `DupX1` moved from before to after the `IAdd`) —
+    /// see the comments at each call site below for the exact stack shape.
+    /// For an overloaded `operator++`/`operator--` on an object, per specs.md
+    /// § Overloadable operators ("Postfix note") both forms are identical:
+    /// the method mutates `this` and both evaluate to the same mutated
+    /// reference.
+    fn compile_incr(&mut self, name: &str, delta: i16, is_prefix: bool) -> Result<ExprTy, CodegenError> {
         let slot = match self.resolve_ident(name)? {
             IdentRef::Local(slot) => slot,
             // `IINC` operates on a local-variable slot by index; a captured
@@ -1518,10 +1531,25 @@ impl<'a> Emitter<'a> {
                 self.op(Opcode::Dup, 1);
                 let value_field_ref = self.box_value_field_ref(&field.ty);
                 self.op_u16(Opcode::GetField, value_field_ref, 0);
-                self.emit_int_const(delta as i64);
-                self.op(Opcode::IAdd, -1);
+                // Stack is [box, old] at this point. `DupX1` inserts a copy
+                // of the top element two slots down — placing it before the
+                // add keeps `old` as the eventual result (postfix); placing
+                // it after keeps `new` (prefix). Either way the final
+                // `SetField` (which pops `[obj, value]` from the top) is
+                // left with exactly `[box, <result>]` above the retained
+                // copy, so it consumes the pair it expects and leaves the
+                // single retained copy as this expression's value.
+                if is_prefix {
+                    self.emit_int_const(delta as i64);
+                    self.op(Opcode::IAdd, -1);
+                    self.op(Opcode::DupX1, 1);
+                } else {
+                    self.op(Opcode::DupX1, 1);
+                    self.emit_int_const(delta as i64);
+                    self.op(Opcode::IAdd, -1);
+                }
                 self.op_u16(Opcode::SetField, value_field_ref, -2);
-                return Ok(ExprTy::Void);
+                return Ok(ExprTy::Int);
             }
             IdentRef::CapturedField(_) => {
                 return Err(CodegenError::Unsupported(format!(
@@ -1529,19 +1557,6 @@ impl<'a> Emitter<'a> {
                 )))
             }
         };
-        // Overloaded `++`/`--` — specs.md § Overloadable operators: the
-        // prefix and postfix forms invoke the *same* `operator++`/
-        // `operator--` method (no separate prefix form exists in this
-        // grammar — only postfix, `Expr::PostIncr`/`PostDecr`), which
-        // mutates `this` and returns `Self`. Matches vm.md § Object
-        // operations, "Overloaded `++`/`--`": "the compiler emits
-        // `INVOKE_INSTANCE`". Like the plain-`int` case just below, this
-        // returns `ExprTy::Void` (no expression value) rather than the
-        // spec's "postfix evaluates to the mutated reference" — consistent
-        // with this codebase's existing postfix support, which is
-        // statement-only in the same way (no `LOAD` before the mutation to
-        // preserve an original value either). Skipped for a boxed (`ref`
-        // parameter) slot, like the plain-`int` case — not exercised.
         if let ExprTy::Object(fqcn) = &slot.ty {
             let method_name = if delta > 0 { "operator++" } else { "operator--" };
             if slot.boxed.is_none() {
@@ -1549,9 +1564,10 @@ impl<'a> Emitter<'a> {
                     let return_ty = method.return_ty.clone();
                     let fqcn = fqcn.clone();
                     self.op_u16(Opcode::Load, slot.index, 1);
-                    let _ = self.emit_operator_call(&fqcn, method_name, &[], &return_ty);
+                    let return_expr_ty = self.emit_operator_call(&fqcn, method_name, &[], &return_ty);
+                    self.op(Opcode::Dup, 1);
                     self.op_u16(Opcode::Store, slot.index, -1);
-                    return Ok(ExprTy::Void);
+                    return Ok(return_expr_ty);
                 }
             }
             return Err(CodegenError::Unsupported(format!(
@@ -1567,19 +1583,37 @@ impl<'a> Emitter<'a> {
         // vm.md § Ref parameters (boxing) — `IINC` operates on a plain local
         // slot; a `ref` parameter's slot holds a `Box<int>` reference
         // instead, so this desugars to an explicit read/add/write through
-        // `Box<int>.value`.
+        // `Box<int>.value`. Same `DupX1`-around-`IAdd` placement as the
+        // captured-boxed-field case above.
         if let Some(inner_ty) = slot.boxed.clone() {
             self.op_u16(Opcode::Load, slot.index, 1);
             self.op(Opcode::Dup, 1);
             let field_ref = self.box_value_field_ref(&inner_ty);
             self.op_u16(Opcode::GetField, field_ref, 0);
-            self.emit_int_const(delta as i64);
-            self.op(Opcode::IAdd, -1);
+            if is_prefix {
+                self.emit_int_const(delta as i64);
+                self.op(Opcode::IAdd, -1);
+                self.op(Opcode::DupX1, 1);
+            } else {
+                self.op(Opcode::DupX1, 1);
+                self.emit_int_const(delta as i64);
+                self.op(Opcode::IAdd, -1);
+            }
             self.op_u16(Opcode::SetField, field_ref, -2);
-            return Ok(ExprTy::Void);
+            return Ok(ExprTy::Int);
         }
-        self.op_iinc(slot.index, delta);
-        Ok(ExprTy::Void)
+        // Plain unboxed local: `IINC` mutates the slot without touching the
+        // stack, so the expression value is just an extra `LOAD` — before
+        // the mutation for postfix (old value), after it for prefix (new
+        // value).
+        if is_prefix {
+            self.op_iinc(slot.index, delta);
+            self.op_u16(Opcode::Load, slot.index, 1);
+        } else {
+            self.op_u16(Opcode::Load, slot.index, 1);
+            self.op_iinc(slot.index, delta);
+        }
+        Ok(ExprTy::Int)
     }
 
     fn compile_call(&mut self, name: &str, args: &[Arg]) -> Result<ExprTy, CodegenError> {
@@ -1640,7 +1674,7 @@ impl<'a> Emitter<'a> {
         // is already the monomorphized instantiation name by this point
         // (nl_syntax::monomorphize), same as any user template. No
         // `ClassInfo` is registered for it (native, no `.nl` source), so
-        // `find_ctor` below would always fail; `crate::native_generics`
+        // `find_ctor_overload` below would always fail; `crate::native_generics`
         // recovers the constructor's parameter types straight from the
         // mangled name instead — see its doc comment. The emitted bytecode
         // shape (`NEW`/`DUP`/args/`INVOKE_SPECIAL <construct>`) is
@@ -1666,14 +1700,23 @@ impl<'a> Emitter<'a> {
             let n = param_types.len();
             (param_types, vec![false; n], require_positional_args(args)?)
         } else {
-            let ctor = find_ctor(self.classes, &fqcn, args.len())
-                .cloned()
-                .ok_or_else(|| {
-                    CodegenError::Unsupported(format!(
-                        "no constructor of '{fqcn}' with {} argument(s)",
-                        args.len()
-                    ))
-                })?;
+            let arg_tys: Vec<Option<Type>> = args
+                .iter()
+                .map(|a| self.overload_arg_ty(&a.value).as_ref().map(expr_ty_to_type))
+                .collect();
+            let ctor = crate::class_table::find_ctor_overload(
+                self.classes,
+                &fqcn,
+                args.len(),
+                &arg_tys,
+            )
+            .cloned()
+            .ok_or_else(|| {
+                CodegenError::Unsupported(format!(
+                    "no constructor of '{fqcn}' with {} argument(s)",
+                    args.len()
+                ))
+            })?;
             let positional = crate::class_table::resolve_positional_args(
                 &ctor.param_names,
                 &ctor.defaults,
@@ -1791,14 +1834,23 @@ impl<'a> Emitter<'a> {
     pub(crate) fn compile_super_call(&mut self, args: &[Arg]) -> Result<(), CodegenError> {
         let super_fqcn = self.superclass_fqcn()?;
         self.op_u16(Opcode::Load, 0, 1);
-        let ctor = find_ctor(self.classes, &super_fqcn, args.len())
-            .cloned()
-            .ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "no constructor of '{super_fqcn}' with {} argument(s) for super(...)",
-                    args.len()
-                ))
-            })?;
+        let arg_tys: Vec<Option<Type>> = args
+            .iter()
+            .map(|a| self.overload_arg_ty(&a.value).as_ref().map(expr_ty_to_type))
+            .collect();
+        let ctor = crate::class_table::find_ctor_overload(
+            self.classes,
+            &super_fqcn,
+            args.len(),
+            &arg_tys,
+        )
+        .cloned()
+        .ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "no constructor of '{super_fqcn}' with {} argument(s) for super(...)",
+                args.len()
+            ))
+        })?;
         let positional =
             crate::class_table::resolve_positional_args(&ctor.param_names, &ctor.defaults, args);
         let param_tys: Vec<ExprTy> = ctor.params.iter().map(expr_ty_of).collect();
@@ -1823,15 +1875,24 @@ impl<'a> Emitter<'a> {
 
     pub(crate) fn compile_this_call(&mut self, args: &[Arg]) -> Result<(), CodegenError> {
         self.op_u16(Opcode::Load, 0, 1);
-        let ctor = find_ctor(self.classes, &self.this_fqcn, args.len())
-            .cloned()
-            .ok_or_else(|| {
-                CodegenError::Unsupported(format!(
-                    "no constructor of '{}' with {} argument(s) for this(...)",
-                    self.this_fqcn,
-                    args.len()
-                ))
-            })?;
+        let arg_tys: Vec<Option<Type>> = args
+            .iter()
+            .map(|a| self.overload_arg_ty(&a.value).as_ref().map(expr_ty_to_type))
+            .collect();
+        let this_fqcn = self.this_fqcn.clone();
+        let ctor = crate::class_table::find_ctor_overload(
+            self.classes,
+            &this_fqcn,
+            args.len(),
+            &arg_tys,
+        )
+        .cloned()
+        .ok_or_else(|| {
+            CodegenError::Unsupported(format!(
+                "no constructor of '{this_fqcn}' with {} argument(s) for this(...)",
+                args.len()
+            ))
+        })?;
         let positional =
             crate::class_table::resolve_positional_args(&ctor.param_names, &ctor.defaults, args);
         let param_tys: Vec<ExprTy> = ctor.params.iter().map(expr_ty_of).collect();
@@ -2094,7 +2155,17 @@ impl<'a> Emitter<'a> {
             // the stdlib table (specs.md's `Utils.swap(ref x, ref y)` etc.).
             if self.lookup_local(leading).is_err() && self.captured_fields.get(leading).is_none() {
                 let fqcn = self.resolve_class_name(&path);
-                if let Some(method) = find_method(self.classes, &fqcn, name, args.len()) {
+                let arg_tys: Vec<Option<Type>> = args
+                    .iter()
+                    .map(|a| self.overload_arg_ty(&a.value).as_ref().map(expr_ty_to_type))
+                    .collect();
+                if let Some(method) = crate::class_table::find_method_overload(
+                    self.classes,
+                    &fqcn,
+                    name,
+                    args.len(),
+                    &arg_tys,
+                ) {
                     if method.is_static {
                         return self.compile_static_user_call(&fqcn, name, args, method.clone());
                     }
@@ -2165,14 +2236,24 @@ impl<'a> Emitter<'a> {
                     let n = p.len();
                     (p, r, vec![false; n], require_positional_args(args)?)
                 } else {
-                    let method = find_method(self.classes, &fqcn, name, args.len())
-                        .cloned()
-                        .ok_or_else(|| {
-                            CodegenError::Unsupported(format!(
-                                "unknown method '{name}' on '{fqcn}' with {} argument(s)",
-                                args.len()
-                            ))
-                        })?;
+                    let arg_tys: Vec<Option<Type>> = args
+                        .iter()
+                        .map(|a| self.overload_arg_ty(&a.value).as_ref().map(expr_ty_to_type))
+                        .collect();
+                    let method = crate::class_table::find_method_overload(
+                        self.classes,
+                        &fqcn,
+                        name,
+                        args.len(),
+                        &arg_tys,
+                    )
+                    .cloned()
+                    .ok_or_else(|| {
+                        CodegenError::Unsupported(format!(
+                            "unknown method '{name}' on '{fqcn}' with {} argument(s)",
+                            args.len()
+                        ))
+                    })?;
                     let positional = crate::class_table::resolve_positional_args(
                         &method.param_names,
                         &method.defaults,
@@ -3043,6 +3124,55 @@ impl<'a> Emitter<'a> {
             // return type instead of compiling the call.
             Expr::MethodCall(target, name, args) => {
                 let ExprTy::Object(fqcn) = self.peek_type(target)? else {
+                    return None;
+                };
+                let method = find_method(self.classes, &fqcn, name, args.len())?;
+                Some(expr_ty_of(&method.return_ty))
+            }
+            _ => None,
+        }
+    }
+
+    /// A call argument's static type, for overload resolution
+    /// (`crate::class_table::find_method_overload`/`find_ctor_overload`)
+    /// purposes only. Deliberately its own, narrower function rather than a
+    /// reuse of `peek_type` above: `peek_type` also recognizes `Binary` (for
+    /// a different purpose — deciding string-concatenation emission order),
+    /// which `nl_sema::checker::Checker::overload_arg_ty` does *not*
+    /// recognize for the equivalent nl-sema-side probe. The two probes must
+    /// stay in lockstep: nl-codegen selects an overload independently, with
+    /// no channel to learn which one nl-sema actually validated the call
+    /// against, so any expression shape recognized on one side and not the
+    /// other could make the two passes pick different overloads for the
+    /// same call — emitting a call to a method nl-sema never checked these
+    /// arguments against. See `nl_sema::checker::Checker::overload_arg_ty`'s
+    /// doc comment for the full rationale; keep both in sync by hand.
+    fn overload_arg_ty(&self, expr: &Expr) -> Option<ExprTy> {
+        match expr {
+            Expr::IntLit(_) => Some(ExprTy::Int),
+            Expr::FloatLit(_) => Some(ExprTy::Float),
+            Expr::BoolLit(_) => Some(ExprTy::Bool),
+            Expr::StringLit(_) => Some(ExprTy::StringT),
+            Expr::NullLit => Some(ExprTy::Null),
+            Expr::This => Some(ExprTy::Object(self.this_fqcn.clone())),
+            Expr::Ident(name) => match self.resolve_ident(name).ok()? {
+                IdentRef::Local(slot) => Some(slot.ty),
+                IdentRef::CapturedField(field) => Some(field.ty),
+            },
+            Expr::New(class_name, _type_args, _args) => {
+                Some(ExprTy::Object(self.resolve_class_name(class_name)))
+            }
+            Expr::FieldAccess(target, name) => {
+                let ExprTy::Object(fqcn) = self.overload_arg_ty(target)? else {
+                    return None;
+                };
+                let field = crate::native_generics::field_ty(&fqcn, name)
+                    .or_else(|| crate::stdlib::result_field_ty(&fqcn, name))
+                    .or_else(|| find_field(self.classes, &fqcn, name).map(|f| f.ty.clone()))?;
+                Some(expr_ty_of(&field))
+            }
+            Expr::MethodCall(target, name, args) => {
+                let ExprTy::Object(fqcn) = self.overload_arg_ty(target)? else {
                     return None;
                 };
                 let method = find_method(self.classes, &fqcn, name, args.len())?;

@@ -6,6 +6,8 @@ use std::collections::{HashMap, HashSet};
 
 use nl_syntax::ast::{MethodKind, SourceFile, SourceItem, Type, Visibility};
 
+use crate::types;
+
 #[derive(Debug, Clone)]
 pub struct FieldInfo {
     pub name: String,
@@ -273,18 +275,6 @@ pub fn resolve_type(ty: &Type, imports: &HashMap<String, String>) -> Type {
     }
 }
 
-/// Best-effort constructor resolution by arity — mirrors `nl_codegen`'s
-/// `find_ctor` (constructor overloads are only distinguished by arity this
-/// phase; see PLAN.md). Range-based rather than exact since optional
-/// parameters (compiler.md § Named and optional parameter rules) let a
-/// single constructor accept a span of argument counts.
-pub fn find_ctor<'c>(classes: &'c ClassTable, fqcn: &str, argc: usize) -> Option<&'c CtorInfo> {
-    classes
-        .get(fqcn)?
-        .ctors
-        .iter()
-        .find(|c| arity_in_range(c.required_count, c.params.len(), argc))
-}
 
 /// Walks `fqcn`'s direct-superclass chain (starting at `fqcn` itself)
 /// looking for a method with the exact same name and parameter types.
@@ -378,6 +368,144 @@ pub fn find_method_owner(
         }
         current = info.extends.clone()?;
     }
+}
+
+/// How well a single call argument matches a single declared parameter, for
+/// overload resolution (see `find_method_owner_overload`/`find_ctor_overload`
+/// below): `Some(0)` for an exact type match, `Some(1)` for one that's only
+/// compatible (numeric widening, a subclass/interface implementation, a
+/// nullable target), `None` for outright incompatible. `arg = None` — this
+/// checker couldn't confidently pin down that argument's static type (see
+/// `Checker::overload_arg_ty`, which only probes a deliberately narrow set of
+/// expression shapes) — always scores `Some(0)`: an argument this checker
+/// can't reason about must never disqualify a candidate it can't actually
+/// evaluate, matching the leniency the rest of this checker already extends
+/// to shapes it doesn't fully model.
+fn overload_param_score(classes: &ClassTable, arg: Option<&Type>, param: &Type) -> Option<u32> {
+    let arg = arg?;
+    if arg == param {
+        return Some(0);
+    }
+    if matches!(arg, Type::Void) {
+        return Some(0);
+    }
+    if matches!(arg, Type::NullT) {
+        return if types::is_nullable(param) { Some(1) } else { None };
+    }
+    if let (Type::Named(from), Type::Named(to)) = (arg, param) {
+        return if is_subclass_or_same(classes, from, to) || implements_interface(classes, from, to)
+        {
+            Some(1)
+        } else {
+            None
+        };
+    }
+    if types::is_assignable(arg, param) {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// Picks the best-matching candidate among `candidates` (already filtered to
+/// same-name, arity-compatible overloads by the caller) by summing
+/// `overload_param_score` over each candidate's parameters against
+/// `arg_tys`. Falls back to the first candidate — same as the old
+/// arity-only `.find()` this replaces — whenever there's at most one
+/// candidate to begin with (the overwhelmingly common, non-overloaded case,
+/// left provably unchanged), when no candidate's parameters are all
+/// individually compatible, or when several candidates tie for the lowest
+/// score: specs.md documents overload resolution "on the argument types"
+/// for constructor delegation but never defines a tie-breaking rule or an
+/// ambiguity diagnostic, so this mirrors this codebase's existing
+/// leniency elsewhere (e.g. `nl_codegen::class_table::find_ctor`'s own doc
+/// comment) rather than inventing a new error code the specs don't call for.
+fn best_overload<'c, T>(
+    classes: &ClassTable,
+    candidates: &[&'c T],
+    params_of: fn(&T) -> &[Type],
+    arg_tys: &[Option<Type>],
+) -> Option<&'c T> {
+    if candidates.len() <= 1 {
+        return candidates.first().copied();
+    }
+    let mut best: Option<(usize, u32)> = None;
+    for (idx, cand) in candidates.iter().enumerate() {
+        let params = params_of(cand);
+        let mut total = 0u32;
+        let mut compatible = true;
+        for (i, param) in params.iter().enumerate() {
+            let arg = arg_tys.get(i).and_then(|o| o.as_ref());
+            match overload_param_score(classes, arg, param) {
+                Some(score) => total += score,
+                None => {
+                    compatible = false;
+                    break;
+                }
+            }
+        }
+        if !compatible {
+            continue;
+        }
+        if best.is_none_or(|(_, best_score)| total < best_score) {
+            best = Some((idx, total));
+        }
+    }
+    match best {
+        Some((idx, _)) => Some(candidates[idx]),
+        None => candidates.first().copied(),
+    }
+}
+
+/// Like `find_method_owner`, but among every same-name, arity-compatible
+/// overload declared directly on a given class in the `extends` chain,
+/// picks the best match for `arg_tys` (see `best_overload`) instead of just
+/// the first declared — the fix for the "arity-only" resolution gap
+/// documented in `IMPLEMENTATION_STATUS.md`. Still only ever looks at one
+/// class level at a time and falls through to the parent when that level has
+/// no arity-compatible candidate at all, exactly like `find_method_owner`.
+pub fn find_method_owner_overload(
+    classes: &ClassTable,
+    fqcn: &str,
+    name: &str,
+    argc: usize,
+    arg_tys: &[Option<Type>],
+) -> Option<(String, MethodInfo)> {
+    let mut current = fqcn.to_string();
+    loop {
+        let info = classes.get(&current)?;
+        let candidates: Vec<&MethodInfo> = info
+            .methods
+            .iter()
+            .filter(|m| m.name == name && arity_in_range(m.required_count, m.params.len(), argc))
+            .collect();
+        if let Some(m) = best_overload(classes, &candidates, |m| &m.params, arg_tys) {
+            return Some((current, m.clone()));
+        }
+        current = info.extends.clone()?;
+    }
+}
+
+/// Like `find_ctor`, but picks the best-matching overload among every
+/// arity-compatible constructor by `arg_tys` (see `best_overload`) instead
+/// of just the first declared — specs.md § Constructor chaining: "the
+/// target constructor is selected by overload resolution on the argument
+/// types, like a regular call." Constructors are never inherited, so
+/// (unlike `find_method_owner_overload`) there's no `extends` walk here,
+/// same as the plain `find_ctor` this replaces.
+pub fn find_ctor_overload<'c>(
+    classes: &'c ClassTable,
+    fqcn: &str,
+    argc: usize,
+    arg_tys: &[Option<Type>],
+) -> Option<&'c CtorInfo> {
+    let candidates: Vec<&CtorInfo> = classes
+        .get(fqcn)?
+        .ctors
+        .iter()
+        .filter(|c| arity_in_range(c.required_count, c.params.len(), argc))
+        .collect();
+    best_overload(classes, &candidates, |c| &c.params, arg_tys)
 }
 
 /// compiler.md § Template instantiation, "Bounded type parameters" — E037.

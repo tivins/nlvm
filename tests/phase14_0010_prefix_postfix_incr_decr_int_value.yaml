@@ -1,0 +1,27 @@
+---
+title: "`++`/`--` as real expressions on a plain `int` local — postfix evaluates to the pre-mutation value, prefix to the post-mutation value (specs.md § Operator precedence, level 1/2)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "5\n7\n7\n10\n8\n8\n"
+---
+
+#NLFILE phase14/incrvalue/Main.nl
+namespace phase14.incrvalue;
+class Main {
+	public static int main(string[] args) {
+		int x = 5;
+		int a = x++;
+		int b = ++x;
+		system.Out.println(a);
+		system.Out.println(b);
+		system.Out.println(x);
+
+		int y = 10;
+		int c = y--;
+		int d = --y;
+		system.Out.println(c);
+		system.Out.println(d);
+		system.Out.println(y);
+		return 0;
+	}
+}

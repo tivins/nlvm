@@ -639,20 +639,104 @@ fn check_constructor_delegation(class: &ClassDecl) -> Result<(), SemaError> {
             else {
                 break;
             };
-            let argc = args.len();
-            let Some(next) = ctors.iter().position(|c| {
-                class_table::arity_in_range(
-                    class_table::required_count(&c.params),
-                    c.params.len(),
-                    argc,
-                )
-            }) else {
+            let Some(next) = resolve_delegation_target(&ctors, ctors[current], args) else {
                 break;
             };
             current = next;
         }
     }
     Ok(())
+}
+
+/// `this(...)` delegates by overload resolution on the argument types
+/// (specs.md § Constructor chaining) — not just arity — same as
+/// `class_table::find_ctor_overload` resolves a *caller's* `this(...)` for
+/// binding/type-checking. This is an independent, narrower re-implementation
+/// for the delegation-*cycle* check specifically: it runs on the raw
+/// `ClassDecl` before a `Checker`/`ClassTable` exist for this file (see
+/// `check_source_file`'s call ordering), so it can't reuse
+/// `Checker::overload_arg_ty` or `class_table::best_overload`, which both
+/// need cross-file/class-table context. Only two argument shapes are scored
+/// — a literal, or a bare reference to the *enclosing* constructor's own
+/// parameter (`this(n, 0)` inside `construct(int n)`), the overwhelmingly
+/// common shapes a delegation call actually uses — anything else (a
+/// computed expression) can't be typed here and never disqualifies a
+/// candidate, same leniency as elsewhere; on a tie (or nothing typeable)
+/// this picks the first arity-compatible constructor, exactly the previous
+/// arity-only behavior, so already-valid programs keep compiling unchanged.
+fn resolve_delegation_target(
+    ctors: &[&MethodDecl],
+    caller: &MethodDecl,
+    args: &[Arg],
+) -> Option<usize> {
+    fn literal_or_own_param_ty(expr: &Expr, caller_params: &[Param]) -> Option<Type> {
+        match expr {
+            Expr::IntLit(_) => Some(Type::Int),
+            Expr::FloatLit(_) => Some(Type::Float),
+            Expr::BoolLit(_) => Some(Type::Bool),
+            Expr::StringLit(_) => Some(Type::StringT),
+            Expr::NullLit => Some(Type::NullT),
+            Expr::Ident(name) => caller_params
+                .iter()
+                .find(|p| &p.name == name)
+                .map(|p| p.ty.clone()),
+            _ => None,
+        }
+    }
+    let arg_tys: Vec<Option<Type>> = args
+        .iter()
+        .map(|a| literal_or_own_param_ty(&a.value, &caller.params))
+        .collect();
+    let candidates: Vec<usize> = ctors
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| {
+            class_table::arity_in_range(
+                class_table::required_count(&c.params),
+                c.params.len(),
+                args.len(),
+            )
+        })
+        .map(|(i, _)| i)
+        .collect();
+    if candidates.len() <= 1 {
+        return candidates.first().copied();
+    }
+    let mut best: Option<(usize, u32)> = None;
+    for &idx in &candidates {
+        let mut total = 0u32;
+        let mut compatible = true;
+        for (i, param) in ctors[idx].params.iter().enumerate() {
+            let arg = arg_tys.get(i).and_then(|o| o.as_ref());
+            let score = match arg {
+                None => Some(0),
+                Some(a) if *a == param.ty => Some(0),
+                Some(Type::Int | Type::Float | Type::Byte)
+                    if matches!(param.ty, Type::Int | Type::Float | Type::Byte) =>
+                {
+                    Some(1)
+                }
+                _ => None,
+            };
+            match score {
+                Some(s) => total += s,
+                None => {
+                    compatible = false;
+                    break;
+                }
+            }
+        }
+        if !compatible {
+            continue;
+        }
+        if best.is_none_or(|(_, best_score)| total < best_score) {
+            best = Some((idx, total));
+        }
+    }
+    Some(match best {
+        Some((idx, _)) => idx,
+        None => candidates[0],
+    })
 }
 
 fn check_method(
@@ -1049,6 +1133,42 @@ impl<'a> MethodChecker<'a> {
         }
     }
 
+    /// A call argument's static type, for overload resolution
+    /// (`class_table::find_method_owner_overload`/`find_ctor_overload`)
+    /// purposes only — deliberately narrower than `check_expr`'s full type
+    /// inference, and deliberately built by delegating to
+    /// `simple_receiver_ty` (rather than duplicating its shapes) plus
+    /// literals on top: `nl_codegen::expr::Emitter` has its own independent
+    /// mirror of this exact same restricted shape set (its own
+    /// `overload_arg_ty`, not the pre-existing broader `peek_type`, which
+    /// also recognizes `Binary` and would let the two sides disagree). Both
+    /// sides *must* stay narrow and in lockstep — nl-codegen selects an
+    /// overload independently, with no channel to learn what nl-sema
+    /// picked, so any expression shape recognized on one side and not the
+    /// other could make them choose two different overloads for the same
+    /// call, compiling a call nl-sema validated against the wrong method
+    /// entirely. Any expression shape outside this set (a cast, a binary
+    /// operator, a ternary, ...) yields `None` here — the caller then never
+    /// disqualifies a candidate on that argument (see
+    /// `class_table::overload_param_score`), so at worst overload
+    /// resolution can't disambiguate on that particular argument, never
+    /// that it disagrees between the two passes.
+    fn overload_arg_ty(&self, expr: &Expr) -> Option<Type> {
+        match expr {
+            Expr::IntLit(_) => Some(Type::Int),
+            Expr::FloatLit(_) => Some(Type::Float),
+            Expr::BoolLit(_) => Some(Type::Bool),
+            Expr::StringLit(_) => Some(Type::StringT),
+            Expr::NullLit => Some(Type::NullT),
+            Expr::This
+            | Expr::Ident(_)
+            | Expr::FieldAccess(..)
+            | Expr::New(..)
+            | Expr::MethodCall(..) => self.simple_receiver_ty(expr),
+            _ => None,
+        }
+    }
+
     /// Walks `fqcn`'s `extends` chain, so a field/method declared on an
     /// ancestor class resolves from a subclass reference too.
     fn field_ty(&self, fqcn: &str, name: &str) -> Option<Type> {
@@ -1214,25 +1334,6 @@ impl<'a> MethodChecker<'a> {
         }
     }
 
-    fn method_throws(&self, fqcn: &str, name: &str, argc: usize) -> Vec<Type> {
-        let mut current = fqcn;
-        loop {
-            let Some(info) = self.classes.get(current) else {
-                return Vec::new();
-            };
-            if let Some(m) = info.methods.iter().find(|m| {
-                m.name == name
-                    && class_table::arity_in_range(m.required_count, m.params.len(), argc)
-            }) {
-                return m.throws.clone();
-            }
-            let Some(parent) = info.extends.as_deref() else {
-                return Vec::new();
-            };
-            current = parent;
-        }
-    }
-
     /// Checks a block in its own scope. Returns the set of variables
     /// definitely assigned after it, and whether it unconditionally
     /// terminates the enclosing control-flow path (compiler.md § Definite
@@ -1315,25 +1416,38 @@ impl<'a> MethodChecker<'a> {
                 Ok((assigned, terminates))
             }
             StmtKind::ThisCall(args) => {
+                let mut arg_tys = Vec::with_capacity(args.len());
                 for a in args {
                     self.check_expr(&a.value, &mut assigned)?;
+                    arg_tys.push(self.overload_arg_ty(&a.value));
                 }
-                if let Some(ctor) =
-                    class_table::find_ctor(self.classes, &self.this_fqcn, args.len())
-                {
+                // specs.md § Constructor chaining: "the target constructor
+                // is selected by overload resolution on the argument
+                // types" — `find_ctor_overload`, not plain arity.
+                if let Some(ctor) = class_table::find_ctor_overload(
+                    self.classes,
+                    &self.this_fqcn,
+                    args.len(),
+                    &arg_tys,
+                ) {
                     let binding = bind_call_args(&ctor.param_names, ctor.required_count, args)?;
                     self.check_ref_args(&ctor.param_names, &ctor.is_ref, &binding, args)?;
                 }
                 Ok((assigned, false))
             }
             StmtKind::SuperCall(args) => {
+                let mut arg_tys = Vec::with_capacity(args.len());
                 for a in args {
                     self.check_expr(&a.value, &mut assigned)?;
+                    arg_tys.push(self.overload_arg_ty(&a.value));
                 }
                 if let Some(Type::Named(super_fqcn)) = self.super_ty.clone() {
-                    if let Some(ctor) =
-                        class_table::find_ctor(self.classes, &super_fqcn, args.len())
-                    {
+                    if let Some(ctor) = class_table::find_ctor_overload(
+                        self.classes,
+                        &super_fqcn,
+                        args.len(),
+                        &arg_tys,
+                    ) {
                         let binding = bind_call_args(&ctor.param_names, ctor.required_count, args)?;
                         self.check_ref_args(&ctor.param_names, &ctor.is_ref, &binding, args)?;
                     }
@@ -1736,15 +1850,19 @@ impl<'a> MethodChecker<'a> {
                 Ok(return_ty)
             }
             Expr::New(class_name, _type_args, args) => {
+                let mut arg_tys = Vec::with_capacity(args.len());
                 for a in args {
                     self.check_expr(&a.value, assigned)?;
+                    arg_tys.push(self.overload_arg_ty(&a.value));
                 }
                 let fqcn = self.class_fqcn(class_name);
                 // compiler.md § Abstract classes and methods — E032.
                 if self.classes.get(&fqcn).is_some_and(|c| c.is_abstract) {
                     return Err(SemaError::InstantiateAbstractClass(fqcn));
                 }
-                if let Some(ctor) = class_table::find_ctor(self.classes, &fqcn, args.len()) {
+                if let Some(ctor) =
+                    class_table::find_ctor_overload(self.classes, &fqcn, args.len(), &arg_tys)
+                {
                     // Constructors are never inherited (each class declares
                     // its own), so the declaring class is always `fqcn`
                     // itself — no `find_ctor`-with-owner needed here.
@@ -1965,9 +2083,15 @@ impl<'a> MethodChecker<'a> {
                         // `match` subject, an `auto`-inferred local) —
                         // exactly what enum `from`/`tryFrom` need.
                         let fqcn = self.class_fqcn(&path);
-                        if let Some((owner, method)) =
-                            class_table::find_method_owner(self.classes, &fqcn, name, args.len())
-                        {
+                        let arg_tys: Vec<Option<Type>> =
+                            args.iter().map(|a| self.overload_arg_ty(&a.value)).collect();
+                        if let Some((owner, method)) = class_table::find_method_owner_overload(
+                            self.classes,
+                            &fqcn,
+                            name,
+                            args.len(),
+                            &arg_tys,
+                        ) {
                             if method.is_static {
                                 if !class_table::is_accessible(
                                     self.classes,
@@ -2092,10 +2216,27 @@ impl<'a> MethodChecker<'a> {
                         self.check_method_access(fqcn, name, args.len())?;
                         // compiler.md § Named and optional parameter rules —
                         // E023-E025. Unresolved (unknown method) is left
-                        // lenient, like the rest of this branch.
-                        if let Some((_, method)) =
-                            class_table::find_method_owner(self.classes, fqcn, name, args.len())
-                        {
+                        // lenient, like the rest of this branch. Resolved
+                        // once via `find_method_owner_overload` (specs.md's
+                        // argument-type-based overload resolution — see
+                        // `class_table::best_overload`) and reused below for
+                        // every other per-call check, rather than
+                        // re-resolving separately (and arity-only) for each
+                        // — otherwise a genuinely overloaded method could
+                        // bind arguments against one overload here but
+                        // report another overload's return type/`throws`/
+                        // `const`-ness further down, which would be worse
+                        // than just picking one consistently.
+                        let arg_tys: Vec<Option<Type>> =
+                            args.iter().map(|a| self.overload_arg_ty(&a.value)).collect();
+                        let resolved = class_table::find_method_owner_overload(
+                            self.classes,
+                            fqcn,
+                            name,
+                            args.len(),
+                            &arg_tys,
+                        );
+                        if let Some((_, method)) = &resolved {
                             let binding =
                                 bind_call_args(&method.param_names, method.required_count, args)?;
                             self.check_ref_args(
@@ -2109,9 +2250,7 @@ impl<'a> MethodChecker<'a> {
                         // method cannot be called on `this` from inside a
                         // `const` method.
                         if self.is_const_method && matches!(**target, Expr::This) {
-                            if let Some((_, method)) =
-                                class_table::find_method_owner(self.classes, fqcn, name, args.len())
-                            {
+                            if let Some((_, method)) = &resolved {
                                 if !method.is_const {
                                     return Err(SemaError::ConstMethodNonConstCall(name.clone()));
                                 }
@@ -2125,12 +2264,7 @@ impl<'a> MethodChecker<'a> {
                                 let is_readonly_loop_var = self.readonly_loop_vars.contains(&id);
                                 let is_const_var = self.const_vars.contains(&id);
                                 if is_readonly_loop_var || is_const_var {
-                                    if let Some((_, method)) = class_table::find_method_owner(
-                                        self.classes,
-                                        fqcn,
-                                        name,
-                                        args.len(),
-                                    ) {
+                                    if let Some((_, method)) = &resolved {
                                         if !method.is_const {
                                             return Err(if is_readonly_loop_var {
                                                 SemaError::ConstLoopVariableModification(
@@ -2144,14 +2278,16 @@ impl<'a> MethodChecker<'a> {
                                 }
                             }
                         }
-                        for t in self.method_throws(fqcn, name, args.len()) {
-                            if let Type::Named(exc_fqcn) = t {
-                                self.require_handled(&exc_fqcn)?;
+                        if let Some((_, method)) = &resolved {
+                            for t in method.throws.clone() {
+                                if let Type::Named(exc_fqcn) = t {
+                                    self.require_handled(&exc_fqcn)?;
+                                }
                             }
+                            Ok(method.return_ty.clone())
+                        } else {
+                            Ok(Type::Void)
                         }
-                        Ok(self
-                            .method_return_ty(fqcn, name, args.len())
-                            .unwrap_or(Type::Void))
                     }
                     _ => Ok(Type::Void),
                 }
@@ -2175,7 +2311,7 @@ impl<'a> MethodChecker<'a> {
                 self.check_cast(&value_ty, &target_ty)?;
                 Ok(target_ty)
             }
-            Expr::PostIncr(name) | Expr::PostDecr(name) => {
+            Expr::PostIncr(name) | Expr::PostDecr(name) | Expr::PreIncr(name) | Expr::PreDecr(name) => {
                 let Some((id, ty)) = self.resolve(name) else {
                     return Ok(Type::Int);
                 };
@@ -2188,7 +2324,11 @@ impl<'a> MethodChecker<'a> {
                 if self.const_vars.contains(&id) {
                     return Err(SemaError::ConstModification(name.clone()));
                 }
-                let op_symbol = if matches!(expr, Expr::PostIncr(_)) { "++" } else { "--" };
+                let op_symbol = if matches!(expr, Expr::PostIncr(_) | Expr::PreIncr(_)) {
+                    "++"
+                } else {
+                    "--"
+                };
                 // Operator overloading — specs.md § Overloadable operators:
                 // `++`/`--` overloads take no parameters (`public Self
                 // operator++()`) and mutate `this`. Mirrors `Expr::Unary`'s

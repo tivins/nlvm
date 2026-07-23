@@ -463,7 +463,9 @@ fn rewrite_expr(expr: &Expr, ns_key: &str, flat: &HashMap<String, Type>) -> Expr
         | Expr::Super
         | Expr::Ident(_)
         | Expr::PostIncr(_)
-        | Expr::PostDecr(_) => expr.clone(),
+        | Expr::PostDecr(_)
+        | Expr::PreIncr(_)
+        | Expr::PreDecr(_) => expr.clone(),
         Expr::Assign(target, value) => Expr::Assign(
             rewrite_lvalue(target, ns_key, flat),
             Box::new(rewrite_expr(value, ns_key, flat)),

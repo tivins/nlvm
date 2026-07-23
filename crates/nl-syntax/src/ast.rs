@@ -450,6 +450,13 @@ pub enum Expr {
     Cast(Box<Type>, Box<Expr>),
     PostIncr(String),
     PostDecr(String),
+    /// `++name` / `--name` — specs.md § Operator precedence, level 2
+    /// (unary/prefix), distinct from the postfix forms above: same target
+    /// restriction (a plain identifier — see `PostIncr`/`PostDecr`), but the
+    /// expression value is the *mutated* value/reference rather than the
+    /// pre-mutation one.
+    PreIncr(String),
+    PreDecr(String),
     Unary(UnOp, Box<Expr>),
     Binary(BinOp, Box<Expr>, Box<Expr>),
     /// `match(subject) { pattern: value, ..., default: value }` — specs.md §

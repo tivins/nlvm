@@ -1,0 +1,30 @@
+---
+title: "`++`/`--` expression value on a boxed target — a `ref int` parameter and a closure-captured-and-mutated `int` local both go through the `Box<int>.value` desugaring, prefix/postfix still produce the right value"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "100\n102\n102\n3\n"
+---
+
+#NLFILE phase14/incrboxed/Main.nl
+namespace phase14.incrboxed;
+class Main {
+	public static void bump(ref int n) {
+		int a = n++;
+		int b = ++n;
+		system.Out.println(a);
+		system.Out.println(b);
+	}
+	public static int main(string[] args) {
+		int n = 100;
+		bump(ref n);
+		system.Out.println(n);
+
+		int captured = 0;
+		auto incr = () => { captured++; };
+		incr();
+		incr();
+		int last = ++captured;
+		system.Out.println(last);
+		return 0;
+	}
+}

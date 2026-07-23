@@ -1,0 +1,35 @@
+---
+title: "specs.md § Overloadable operators, Postfix note — for an overloaded `operator++`, prefix and postfix invoke the same method and both expressions evaluate to the (shared, mutated) object reference, unlike the primitive-`int` case"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "7\n7\n7\n"
+---
+
+#NLFILE phase14/incroverloadvalue/Counter.nl
+namespace phase14.incroverloadvalue;
+class Counter {
+	public int value;
+
+	public construct(int value) {
+		this.value = value;
+	}
+
+	public Self operator++() {
+		this.value = this.value + 1;
+		return this;
+	}
+}
+
+#NLFILE phase14/incroverloadvalue/Main.nl
+namespace phase14.incroverloadvalue;
+class Main {
+	public static int main(string[] args) {
+		auto c = new Counter(5);
+		auto post = c++;
+		auto pre = ++c;
+		system.Out.println(post.value);
+		system.Out.println(pre.value);
+		system.Out.println(c.value);
+		return 0;
+	}
+}
