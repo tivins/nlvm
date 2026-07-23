@@ -1,6 +1,6 @@
 # État d'implémentation vs. nlvm-specs
 
-Photographie de l'écart entre les spécifications (`nlvm-specs`, `SPECS_VERSION` = 0.8.47 côté ce dépôt) et l'implémentation Rust actuelle (nlvm v0.12.2). Établi par lecture croisée de `specs.md`, `compiler.md`, `vm.md`, `stdlib.md`, `optimizations.md`, `tests.md` contre `crates/nl-syntax`, `crates/nl-sema`, `crates/nl-codegen`, `crates/nl-bytecode`, `crates/nl-vm`, `crates/nl-test-runner`, `Next.md` et `journal/`.
+Photographie de l'écart entre les spécifications (`nlvm-specs`, `SPECS_VERSION` = 0.8.47 côté ce dépôt) et l'implémentation Rust actuelle (nlvm v0.12.4). Établi par lecture croisée de `specs.md`, `compiler.md`, `vm.md`, `stdlib.md`, `optimizations.md`, `tests.md` contre `crates/nl-syntax`, `crates/nl-sema`, `crates/nl-codegen`, `crates/nl-bytecode`, `crates/nl-vm`, `crates/nl-test-runner`, `Next.md` et `journal/`.
 
 Ne liste que les écarts. Tout ce qui n'apparaît pas ici a été vérifié conforme.
 
@@ -25,7 +25,7 @@ Les écarts restants sont suivis comme **issues GitHub** sur [nlvm-lang/nlvm/iss
 ## Ordre de valeur/risque recommandé
 
 1. **[#1 `system.text.json`](https://github.com/nlvm-lang/nlvm/issues/1)** et **[#2 `system.db`](https://github.com/nlvm-lang/nlvm/issues/2)** — gros chantiers autonomes (nouvelles dépendances, nouveau binding natif complet).
-2. Limites Phase 5 : **[#7 appel statique implicite même-classe](https://github.com/nlvm-lang/nlvm/issues/7)** et **[#8 conformance E033/E044 par type](https://github.com/nlvm-lang/nlvm/issues/8)**.
+2. ~~Limites Phase 5 : **[#7 appel statique implicite même-classe](https://github.com/nlvm-lang/nlvm/issues/7)** et **[#8 conformance E033/E044 par type](https://github.com/nlvm-lang/nlvm/issues/8)**.~~ Traité v0.12.3 (#7) et v0.12.4 (#8).
 3. **[#9 Fusion par diamant d'interfaces (E041)](https://github.com/nlvm-lang/nlvm/issues/9)** — chantier isolé et bien délimité.
 4. **[#16 Vérificateur statique `NEW`](https://github.com/nlvm-lang/nlvm/issues/16)** (limite Phase 6) — à considérer si un besoin concret apparaît.
 5. **[#17 Limites collecteur de cycles Phase 7](https://github.com/nlvm-lang/nlvm/issues/17)**.

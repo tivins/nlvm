@@ -1,0 +1,36 @@
+---
+title: "Interface conformance — a class may declare an unrelated overload of the same name alongside the exact-signature implementation (issue #8: the exact-signature match must be found even when other same-name overloads exist)"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "ok\n"
+expected_stderr: ""
+---
+
+#NLFILE phase17/e033overloadok/Handler.nl
+namespace phase17.e033overloadok;
+interface Handler {
+	public void handle(int code);
+}
+
+#NLFILE phase17/e033overloadok/MultiHandler.nl
+namespace phase17.e033overloadok;
+class MultiHandler implements Handler {
+	public construct() {}
+	// The exact-signature `handle(int)` implementation.
+	public void handle(int code) {
+		system.Out.println("ok");
+	}
+	// An unrelated same-name overload — must not confuse the conformance
+	// check, which now looks for an exact parameter-type match.
+	public void handle(string code) {}
+}
+
+#NLFILE phase17/e033overloadok/Main.nl
+namespace phase17.e033overloadok;
+class Main {
+	public static int main(string[] args) {
+		MultiHandler h = new MultiHandler();
+		h.handle(42);
+		return 0;
+	}
+}

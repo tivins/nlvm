@@ -253,6 +253,38 @@ pub fn import_map(file: &SourceFile, all_files: &[SourceFile]) -> HashMap<String
     map
 }
 
+/// Rewrites every `Type::Named("Self")` inside `ty` to `Type::Named(fqcn)`
+/// (recursively through arrays, unions, generics, function types). See the
+/// parser's `parse_interface_decl` doc comment: `Self` in an interface method
+/// signature is stored as the literal placeholder `Type::Named("Self")` and
+/// only resolves to the implementing class's own FQCN at conformance-check
+/// time — used by E033/E044's interface-vs-impl signature match so a
+/// `Cloneable.clone(): Self` interface method matches a class-side
+/// `clone(): <ThisClass>` (which the parser has already substituted).
+pub fn substitute_self(ty: &Type, fqcn: &str) -> Type {
+    match ty {
+        Type::Named(name) if name == "Self" => Type::Named(fqcn.to_string()),
+        Type::Array(inner) => Type::Array(Box::new(substitute_self(inner, fqcn))),
+        Type::Union(members) => {
+            Type::Union(members.iter().map(|m| substitute_self(m, fqcn)).collect())
+        }
+        Type::Generic(name, args) => Type::Generic(
+            name.clone(),
+            args.iter().map(|a| substitute_self(a, fqcn)).collect(),
+        ),
+        Type::Function {
+            params,
+            return_type,
+            throws,
+        } => Type::Function {
+            params: params.iter().map(|p| substitute_self(p, fqcn)).collect(),
+            return_type: Box::new(substitute_self(return_type, fqcn)),
+            throws: throws.clone(),
+        },
+        other => other.clone(),
+    }
+}
+
 pub fn resolve_type(ty: &Type, imports: &HashMap<String, String>) -> Type {
     match ty {
         Type::Named(name) => {

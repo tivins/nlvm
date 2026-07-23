@@ -1,0 +1,33 @@
+---
+title: "E044 — the const-correctness check must match the interface method by exact parameter types, not just arity: a non-const method whose parameters differ from a `const` interface method must not falsely trigger E044 (issue #8). The unrelated missing exact-signature impl is caught by E033 instead."
+file_separator: "#NLFILE"
+expected_compile_error: "E033"
+---
+
+#NLFILE phase17/e044paramtype/Sized.nl
+namespace phase17.e044paramtype;
+interface Sized {
+	public int sizeOf(int index) const;
+}
+
+#NLFILE phase17/e044paramtype/Bag.nl
+namespace phase17.e044paramtype;
+class Bag implements Sized {
+	public construct() {}
+	// Same name and arity as the interface method, but the parameter type
+	// differs, so this is NOT the implementation of `Sized.sizeOf(int)`.
+	// Under the old arity-only match this would have been flagged as E044
+	// ("must be const"); it must now be silent on E044 and let E033 fire
+	// for the truly missing exact-signature implementation.
+	public int sizeOf(string key) {
+		return 0;
+	}
+}
+
+#NLFILE phase17/e044paramtype/Main.nl
+namespace phase17.e044paramtype;
+class Main {
+	public static int main(string[] args) {
+		return 0;
+	}
+}

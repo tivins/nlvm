@@ -1,0 +1,28 @@
+---
+title: "E033 — a class-side method with the interface method's name and arity but a different parameter type does not satisfy the interface (issue #8: was silently accepted under the old arity-only match)"
+file_separator: "#NLFILE"
+expected_compile_error: "E033"
+---
+
+#NLFILE phase17/e033paramtype/Handler.nl
+namespace phase17.e033paramtype;
+interface Handler {
+	public void handle(int code);
+}
+
+#NLFILE phase17/e033paramtype/StringHandler.nl
+namespace phase17.e033paramtype;
+class StringHandler implements Handler {
+	public construct() {}
+	// Same name and arity as `Handler.handle(int)`, but the parameter type
+	// differs — this must no longer count as an implementation.
+	public void handle(string code) {}
+}
+
+#NLFILE phase17/e033paramtype/Main.nl
+namespace phase17.e033paramtype;
+class Main {
+	public static int main(string[] args) {
+		return 0;
+	}
+}

@@ -1,0 +1,30 @@
+---
+title: "E033 — a class-side method with the same name and parameters as an interface method but a different return type does not satisfy the interface (issue #8)"
+file_separator: "#NLFILE"
+expected_compile_error: "E033"
+---
+
+#NLFILE phase17/e033returnty/Reader.nl
+namespace phase17.e033returnty;
+interface Reader {
+	public string read();
+}
+
+#NLFILE phase17/e033returnty/IntReader.nl
+namespace phase17.e033returnty;
+class IntReader implements Reader {
+	public construct() {}
+	// Same name and (empty) parameters as `Reader.read()`, but returns `int`
+	// instead of `string` — must not count as an implementation.
+	public int read() {
+		return 0;
+	}
+}
+
+#NLFILE phase17/e033returnty/Main.nl
+namespace phase17.e033returnty;
+class Main {
+	public static int main(string[] args) {
+		return 0;
+	}
+}

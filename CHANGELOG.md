@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.4]
+
+### Fixed
+- Interface conformance checks (E033 for missing implementations, E044 for `const`-correctness on `implements`) now match an interface method against a class-side implementation by **exact parameter types and exact return type**, not just by name and arity. Previously a class implementing `Handler { void handle(int code); }` with `handle(string code)` — same name, same arity but a different parameter type — silently satisfied the interface; likewise `Reader { string read(); }` was considered implemented by `int read()`. The check now uses the same type-based resolution already applied to `new`/delegation/method calls, walks the whole `extends` chain (so an implementation inherited from a superclass still counts), and treats an interface method's `Self`-typed parameter or return type as the implementing class's own FQCN (matching specs.md § Self in interfaces). E044 also stops firing when the "matching" method is really a different overload (no exact-signature impl exists): a single fixture no longer trips E044 and E033 for the same root cause. See [issue #8](https://github.com/nlvm-lang/nlvm/issues/8).
+
 ## [0.12.3]
 
 ### Fixed

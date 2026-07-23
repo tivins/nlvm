@@ -62,7 +62,7 @@ pub fn check_source_file(
         )?;
         locate(
             class.decl_line,
-            check_const_interface_impl(class, classes, &this_fqcn),
+            check_const_interface_impl(classes, &this_fqcn),
         )?;
         locate(
             class.decl_line,
@@ -448,11 +448,13 @@ fn field_assigned_stmt(
 }
 
 /// compiler.md § Const methods, "implements" clause — E044. A method that
-/// implements an interface method declared `const` must itself be `const`
-/// (matched by name + arity, same best-effort resolution as everywhere else
-/// in this checker — see `check_duplicate_methods`).
+/// implements an interface method declared `const` must itself be `const`.
+/// Matched by name + exact parameter types (walking `this_fqcn`'s `extends`
+/// chain via `find_method_exact`), closing the arity-only gap tracked as
+/// issue #8: an implementation is only "the" implementation of an interface
+/// method if it agrees on the parameter signature, not merely on how many
+/// parameters it takes.
 fn check_const_interface_impl(
-    class: &ClassDecl,
     classes: &ClassTable,
     this_fqcn: &str,
 ) -> Result<(), SemaError> {
@@ -471,11 +473,23 @@ fn check_const_interface_impl(
             if !iface_method.is_const {
                 continue;
             }
-            let Some(impl_method) = class.methods.iter().find(|m| {
-                m.kind == MethodKind::Normal
-                    && m.name == iface_method.name
-                    && m.params.len() == iface_method.params.len()
-            }) else {
+            // specs.md § Self in interfaces — an interface method's
+            // `Self`-typed params stand in for the implementing class here.
+            let expected_params: Vec<Type> = iface_method
+                .params
+                .iter()
+                .map(|p| class_table::substitute_self(p, this_fqcn))
+                .collect();
+            let Some(impl_method) = class_table::find_method_exact(
+                classes,
+                this_fqcn,
+                &iface_method.name,
+                &expected_params,
+            ) else {
+                // Missing impl or signature-mismatched — E033 in
+                // `check_abstract_final` handles that; E044 stays silent
+                // here so a single fixture never trips two separate
+                // diagnostics for the same root cause.
                 continue;
             };
             if !impl_method.is_const {
@@ -570,8 +584,10 @@ fn check_abstract_final(
         // just directly by `this_fqcn` itself: a concrete subclass of an
         // abstract class that implements an interface inherits the same
         // obligation) must have a concrete (non-abstract) implementation
-        // somewhere along that same chain, arity-matched the same
-        // best-effort way as E044's const check above.
+        // somewhere along that same chain, matched by exact parameter types
+        // *and* exact return type (closing the arity-only gap tracked as
+        // issue #8: `void close()` and `int close(string reason)` no longer
+        // silently satisfy each other).
         let mut interfaces: HashSet<String> = HashSet::new();
         let mut current = Some(this_fqcn.to_string());
         while let Some(fqcn) = current {
@@ -586,26 +602,25 @@ fn check_abstract_final(
                 continue;
             };
             for iface_method in &iface_info.methods {
-                let arity = iface_method.params.len();
-                let has_concrete_impl = {
-                    let mut current = this_fqcn;
-                    loop {
-                        let Some(info) = classes.get(current) else {
-                            break false;
-                        };
-                        if let Some(m) = info
-                            .methods
-                            .iter()
-                            .find(|m| m.name == iface_method.name && m.params.len() == arity)
-                        {
-                            break !m.is_abstract;
-                        }
-                        match info.extends.as_deref() {
-                            Some(parent) => current = parent,
-                            None => break false,
-                        }
-                    }
-                };
+                // specs.md § Self in interfaces — `Self` on the interface
+                // side matches the implementing class's own FQCN on the
+                // impl side (which the parser has already substituted
+                // literally). See `class_table::substitute_self`.
+                let expected_params: Vec<Type> = iface_method
+                    .params
+                    .iter()
+                    .map(|p| class_table::substitute_self(p, this_fqcn))
+                    .collect();
+                let expected_return =
+                    class_table::substitute_self(&iface_method.return_ty, this_fqcn);
+                let has_concrete_impl = class_table::find_method_exact(
+                    classes,
+                    this_fqcn,
+                    &iface_method.name,
+                    &expected_params,
+                )
+                .filter(|m| m.return_ty == expected_return)
+                .is_some_and(|m| !m.is_abstract);
                 if !has_concrete_impl {
                     return Err(SemaError::ClassMustBeAbstract(
                         class.name.clone(),
