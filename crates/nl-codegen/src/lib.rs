@@ -86,17 +86,30 @@ fn compile_file(
     let this_class = cp.add_class(&fqcn);
 
     match &file.item {
-        SourceItem::Interface(_) => Ok(vec![Module {
-            version: nl_bytecode::module::VERSION,
-            constant_pool: cp,
-            this_class,
-            class_flags: class_flags::INTERFACE,
-            super_class: 0,
-            interfaces: Vec::new(),
-            fields: Vec::new(),
-            methods: Vec::new(),
-            hash_algo: HashAlgo::Sha256,
-        }]),
+        // vm.md § Method descriptor, "Abstract method representation":
+        // "Interface method declarations are encoded the same way
+        // (implicitly abstract)" — each signature becomes a code-less
+        // `ABSTRACT` stub, not an omitted method, so `nl_bytecode::Module::
+        // validate`'s invariants and virtual dispatch's
+        // `find_method_by_descriptor` see it like any other abstract method.
+        SourceItem::Interface(iface) => {
+            let methods = iface
+                .methods
+                .iter()
+                .map(|m| interface_method_descriptor(m, &mut cp, &imports))
+                .collect();
+            Ok(vec![Module {
+                version: nl_bytecode::module::VERSION,
+                constant_pool: cp,
+                this_class,
+                class_flags: class_flags::INTERFACE,
+                super_class: 0,
+                interfaces: Vec::new(),
+                fields: Vec::new(),
+                methods,
+                hash_algo: HashAlgo::Sha256,
+            }])
+        }
         SourceItem::Class(class) => {
             let super_class = match &class.extends {
                 Some(name) => {
@@ -206,8 +219,14 @@ fn compile_file(
             // has no body and is never itself instantiable/directly callable
             // (E032 rejects `new` on its class; E033 guarantees every
             // concrete subclass provides a real override, which virtual
-            // dispatch always resolves to first) — nothing to emit.
-            for (method_index, m) in class.methods.iter().filter(|m| !m.is_abstract).enumerate() {
+            // dispatch always resolves to first), but vm.md still requires a
+            // code-less stub descriptor (`ABSTRACT` flag, `code_length = 0`)
+            // rather than omitting the method from the module entirely.
+            for (method_index, m) in class.methods.iter().enumerate() {
+                if m.is_abstract {
+                    methods.push(abstract_method_descriptor(m, &mut cp, &imports));
+                    continue;
+                }
                 let patched;
                 let m = if m.kind == MethodKind::Constructor && !instance_field_inits.is_empty() {
                     patched = prepend_field_inits(m, &instance_field_inits);
@@ -283,6 +302,12 @@ fn compile_file(
             }
             if class.is_enum {
                 flags |= class_flags::ENUM;
+            }
+            if class.is_abstract {
+                flags |= class_flags::ABSTRACT;
+            }
+            if class.is_final {
+                flags |= class_flags::FINAL;
             }
             let mut modules = vec![Module {
                 version: nl_bytecode::module::VERSION,
@@ -387,6 +412,9 @@ fn compile_method(
     if method.is_static {
         flags |= method_flags::STATIC;
     }
+    if method.is_final {
+        flags |= method_flags::FINAL;
+    }
     match method.kind {
         MethodKind::Constructor => flags |= method_flags::CONSTRUCTOR,
         MethodKind::Destructor => flags |= method_flags::DESTRUCTOR,
@@ -405,6 +433,90 @@ fn compile_method(
         line_table: emitter.line_table,
     };
     Ok((descriptor, emitter.closures))
+}
+
+/// vm.md § Method descriptor, "Abstract method representation" — an
+/// `abstract` method (`MethodDecl.is_abstract`, always an empty `body`) is
+/// encoded as a stub descriptor rather than compiled: `max_locals = 0`,
+/// `max_stack = 0`, `code_length = 0`, no exception/line table. There is no
+/// `Emitter` to run, so this only needs the name/descriptor computation
+/// `compile_method` also does at its top.
+fn abstract_method_descriptor(
+    method: &MethodDecl,
+    cp: &mut ConstantPool,
+    imports: &HashMap<String, String>,
+) -> MethodDescriptor {
+    let name_index = cp.add_utf8(method.name.clone());
+    let resolved_params: Vec<Type> = method
+        .params
+        .iter()
+        .map(|p| resolve_type(&p.ty, imports))
+        .collect();
+    let is_ref: Vec<bool> = method.params.iter().map(|p| p.is_ref).collect();
+    let resolved_return = resolve_type(&method.return_type, imports);
+    let cc_params = class_table::calling_convention_params(&resolved_params, &is_ref);
+    let descriptor = method_descriptor(&cc_params, &resolved_return);
+    let descriptor_index = cp.add_type_desc(&descriptor);
+    let throws_types: Vec<u16> = method
+        .throws
+        .iter()
+        .map(|name| {
+            let fqcn = imports.get(name).cloned().unwrap_or_else(|| name.clone());
+            cp.add_class(&fqcn)
+        })
+        .collect();
+
+    let mut flags = visibility_method_flag(method.visibility) | method_flags::ABSTRACT;
+    if method.is_static {
+        flags |= method_flags::STATIC;
+    }
+
+    MethodDescriptor {
+        flags,
+        name_index,
+        descriptor_index,
+        throws_types,
+        max_locals: 0,
+        max_stack: 0,
+        code: Vec::new(),
+        exception_table: Vec::new(),
+        line_table: Vec::new(),
+    }
+}
+
+/// Same stub shape as `abstract_method_descriptor`, from an interface's
+/// `MethodSig` instead of a class's `MethodDecl` — specs.md § Interface
+/// inheritance: "Interface methods are implicitly abstract". An interface
+/// method has no `is_static`/`throws` to carry (the grammar doesn't allow
+/// either on a signature-only declaration) and is always `public`.
+fn interface_method_descriptor(
+    sig: &nl_syntax::ast::MethodSig,
+    cp: &mut ConstantPool,
+    imports: &HashMap<String, String>,
+) -> MethodDescriptor {
+    let name_index = cp.add_utf8(sig.name.clone());
+    let resolved_params: Vec<Type> = sig
+        .params
+        .iter()
+        .map(|p| resolve_type(&p.ty, imports))
+        .collect();
+    let is_ref: Vec<bool> = sig.params.iter().map(|p| p.is_ref).collect();
+    let resolved_return = resolve_type(&sig.return_type, imports);
+    let cc_params = class_table::calling_convention_params(&resolved_params, &is_ref);
+    let descriptor = method_descriptor(&cc_params, &resolved_return);
+    let descriptor_index = cp.add_type_desc(&descriptor);
+
+    MethodDescriptor {
+        flags: method_flags::PUBLIC | method_flags::ABSTRACT,
+        name_index,
+        descriptor_index,
+        throws_types: Vec::new(),
+        max_locals: 0,
+        max_stack: 0,
+        code: Vec::new(),
+        exception_table: Vec::new(),
+        line_table: Vec::new(),
+    }
 }
 
 /// Builds `<receiver>.<field.name> = <field.init>;` for a field declared
@@ -517,5 +629,70 @@ mod tests {
 
         let lines: Vec<u32> = method.line_table.iter().map(|e| e.line).collect();
         assert_eq!(lines, vec![4, 5, 6, 7, 9]);
+    }
+
+    /// vm.md § Method descriptor, "Abstract method representation" — an
+    /// `abstract` method must be emitted as a code-less stub (`ABSTRACT`
+    /// flag, `code_length = 0`, no locals/stack/tables) instead of being
+    /// left out of the module entirely (the pre-Phase-6 behavior this
+    /// guards against — see IMPLEMENTATION_STATUS.md § VM / bytecode).
+    #[test]
+    fn abstract_method_compiles_to_codeless_abstract_stub() {
+        let src = "namespace test.abstract_stub;\n\
+                    abstract class Shape {\n\
+                    \x20   public abstract float area();\n\
+                    }\n";
+        let file = nl_syntax::parse_source_file(src, "Shape.nl".to_string()).unwrap();
+        let module = compile_source_file(&file).unwrap();
+
+        assert_ne!(module.class_flags & class_flags::ABSTRACT, 0);
+
+        let method = module
+            .find_method("area")
+            .expect("abstract method must still appear in the compiled module");
+        assert_ne!(method.flags & method_flags::ABSTRACT, 0);
+        assert_eq!(method.max_locals, 0);
+        assert_eq!(method.max_stack, 0);
+        assert!(method.code.is_empty());
+        assert!(method.exception_table.is_empty());
+        assert!(method.line_table.is_empty());
+    }
+
+    /// Same invariant, but from an interface's signature-only method
+    /// (specs.md § Interface inheritance: "Interface methods are implicitly
+    /// abstract" — vm.md says they're "encoded the same way").
+    #[test]
+    fn interface_method_compiles_to_codeless_abstract_stub() {
+        let src = "namespace test.interface_stub;\n\
+                    interface Shape {\n\
+                    \x20   float area();\n\
+                    }\n";
+        let file = nl_syntax::parse_source_file(src, "Shape.nl".to_string()).unwrap();
+        let module = compile_source_file(&file).unwrap();
+
+        assert_ne!(module.class_flags & class_flags::INTERFACE, 0);
+
+        let method = module
+            .find_method("area")
+            .expect("interface method must appear in the compiled module");
+        assert_ne!(method.flags & method_flags::ABSTRACT, 0);
+        assert!(method.code.is_empty());
+    }
+
+    /// A `final` method must carry the `FINAL` flag (vm.md § Method
+    /// descriptor) so the VM's link-time check (`nl_vm::program::
+    /// verify_link`) can reject a subclass that overrides it.
+    #[test]
+    fn final_method_carries_final_flag() {
+        let src = "namespace test.final_flag;\n\
+                    class Base {\n\
+                    \x20   public construct() {}\n\
+                    \x20   public final string label() { return \"base\"; }\n\
+                    }\n";
+        let file = nl_syntax::parse_source_file(src, "Base.nl".to_string()).unwrap();
+        let module = compile_source_file(&file).unwrap();
+
+        let method = module.find_method("label").unwrap();
+        assert_ne!(method.flags & method_flags::FINAL, 0);
     }
 }

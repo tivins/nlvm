@@ -98,6 +98,55 @@ pub struct Module {
 }
 
 impl Module {
+    /// vm.md § Class flag bits / § Method descriptor ("Abstract method
+    /// representation") — structural invariants a single module must
+    /// satisfy regardless of how it was produced (freshly compiled in
+    /// memory by `nl-codegen`, or decoded from a `.nlm` file on disk).
+    /// `Module::decode` calls this so a hand-crafted or corrupted module
+    /// is rejected at load time rather than tripping some unrelated
+    /// assertion deep in the VM the first time the malformed method runs.
+    ///
+    /// Cross-module invariants that need the whole linked program (a
+    /// `super_class` naming a `FINAL` class, overriding a `FINAL` method)
+    /// can't be checked here — a single `Module` has no visibility into
+    /// its sibling modules — so they're checked once every module of a
+    /// program is loaded, by `nl_vm::program::verify_link`.
+    pub fn validate(&self) -> Result<(), BytecodeError> {
+        if self.class_flags & class_flags::ABSTRACT != 0
+            && self.class_flags & class_flags::FINAL != 0
+        {
+            return Err(BytecodeError::Malformed(
+                "class cannot have both ABSTRACT and FINAL flags set",
+            ));
+        }
+        for m in &self.methods {
+            let is_abstract = m.flags & method_flags::ABSTRACT != 0;
+            let is_final = m.flags & method_flags::FINAL != 0;
+            if is_abstract && is_final {
+                return Err(BytecodeError::Malformed(
+                    "method cannot have both ABSTRACT and FINAL flags set",
+                ));
+            }
+            if is_abstract {
+                if m.max_locals != 0
+                    || m.max_stack != 0
+                    || !m.code.is_empty()
+                    || !m.exception_table.is_empty()
+                    || !m.line_table.is_empty()
+                {
+                    return Err(BytecodeError::Malformed(
+                        "ABSTRACT method must have no code, locals, stack, exception table, or line table",
+                    ));
+                }
+            } else if m.code.is_empty() {
+                return Err(BytecodeError::Malformed(
+                    "non-ABSTRACT method must have a non-empty code array",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn this_class_name(&self) -> Option<&str> {
         self.constant_pool.class_name_at(self.this_class)
     }
@@ -329,7 +378,7 @@ impl Module {
             }
         }
 
-        Ok(Module {
+        let module = Module {
             version,
             constant_pool,
             this_class,
@@ -339,7 +388,9 @@ impl Module {
             fields,
             methods,
             hash_algo,
-        })
+        };
+        module.validate()?;
+        Ok(module)
     }
 }
 
@@ -457,5 +508,141 @@ impl<'a> Reader<'a> {
     fn read_f64(&mut self) -> Result<f64, BytecodeError> {
         let b = self.read_bytes(8)?;
         Ok(f64::from_be_bytes(b.try_into().unwrap()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn base_module(flags: u16) -> Module {
+        let mut constant_pool = ConstantPool::new();
+        let this_class = constant_pool.add_class("app.Widget");
+        Module {
+            version: VERSION,
+            constant_pool,
+            this_class,
+            class_flags: flags,
+            super_class: 0,
+            interfaces: Vec::new(),
+            fields: Vec::new(),
+            methods: Vec::new(),
+            // `HashAlgo::None` — these tests hand-corrupt a `MethodDescriptor`
+            // after encoding would otherwise have to recompute the trailer
+            // hash; the invariants under test live entirely in the
+            // methods/flags section decoded before the trailer is even read.
+            hash_algo: HashAlgo::None,
+        }
+    }
+
+    fn abstract_method(cp: &mut ConstantPool, name: &str) -> MethodDescriptor {
+        MethodDescriptor {
+            flags: method_flags::PUBLIC | method_flags::ABSTRACT,
+            name_index: cp.add_utf8(name.to_string()),
+            descriptor_index: cp.add_type_desc("() -> void"),
+            throws_types: Vec::new(),
+            max_locals: 0,
+            max_stack: 0,
+            code: Vec::new(),
+            exception_table: Vec::new(),
+            line_table: Vec::new(),
+        }
+    }
+
+    fn concrete_method(cp: &mut ConstantPool, name: &str) -> MethodDescriptor {
+        MethodDescriptor {
+            flags: method_flags::PUBLIC,
+            name_index: cp.add_utf8(name.to_string()),
+            descriptor_index: cp.add_type_desc("() -> void"),
+            throws_types: Vec::new(),
+            max_locals: 1,
+            max_stack: 1,
+            code: vec![0x00],
+            exception_table: Vec::new(),
+            line_table: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn valid_abstract_method_round_trips() {
+        let mut m = base_module(0);
+        let am = abstract_method(&mut m.constant_pool, "area");
+        m.methods.push(am);
+        let bytes = m.encode();
+        let decoded = Module::decode(&bytes).expect("a well-formed abstract stub must decode");
+        assert_eq!(decoded.methods.len(), 1);
+        assert_ne!(decoded.methods[0].flags & method_flags::ABSTRACT, 0);
+    }
+
+    #[test]
+    fn valid_concrete_method_round_trips() {
+        let mut m = base_module(0);
+        let cm = concrete_method(&mut m.constant_pool, "area");
+        m.methods.push(cm);
+        let bytes = m.encode();
+        let decoded = Module::decode(&bytes).expect("a well-formed concrete method must decode");
+        assert_eq!(decoded.methods.len(), 1);
+    }
+
+    #[test]
+    fn decode_rejects_class_with_abstract_and_final_both_set() {
+        let m = base_module(class_flags::ABSTRACT | class_flags::FINAL);
+        let bytes = m.encode();
+        assert!(matches!(
+            Module::decode(&bytes),
+            Err(BytecodeError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_abstract_method_with_nonempty_code() {
+        let mut m = base_module(0);
+        let mut am = abstract_method(&mut m.constant_pool, "area");
+        am.code = vec![0x00];
+        m.methods.push(am);
+        let bytes = m.encode();
+        assert!(matches!(
+            Module::decode(&bytes),
+            Err(BytecodeError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_abstract_method_with_nonzero_max_locals() {
+        let mut m = base_module(0);
+        let mut am = abstract_method(&mut m.constant_pool, "area");
+        am.max_locals = 1;
+        m.methods.push(am);
+        let bytes = m.encode();
+        assert!(matches!(
+            Module::decode(&bytes),
+            Err(BytecodeError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_non_abstract_method_with_empty_code() {
+        let mut m = base_module(0);
+        let mut cm = concrete_method(&mut m.constant_pool, "area");
+        cm.code = Vec::new();
+        m.methods.push(cm);
+        let bytes = m.encode();
+        assert!(matches!(
+            Module::decode(&bytes),
+            Err(BytecodeError::Malformed(_))
+        ));
+    }
+
+    #[test]
+    fn decode_rejects_method_with_abstract_and_final_both_set() {
+        let mut m = base_module(0);
+        let mut am = abstract_method(&mut m.constant_pool, "area");
+        am.flags |= method_flags::FINAL;
+        m.methods.push(am);
+        let bytes = m.encode();
+        assert!(matches!(
+            Module::decode(&bytes),
+            Err(BytecodeError::Malformed(_))
+        ));
     }
 }

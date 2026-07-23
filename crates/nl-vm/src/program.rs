@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
-use nl_bytecode::{field_flags, MethodDescriptor, Module};
+use nl_bytecode::{class_flags, field_flags, method_flags, MethodDescriptor, Module};
 
 use crate::error::VmError;
 use crate::interpreter::{call_static, default_value_for};
@@ -344,6 +344,88 @@ impl Program {
     }
 }
 
+/// vm.md § Class flag bits / § Method descriptor — the two `FINAL`
+/// guarantees the spec phrases as checked "at link time": a `super_class`
+/// naming a `FINAL` class is rejected outright, and a method that redeclares
+/// the same name+descriptor as an ancestor's `FINAL` method is rejected as
+/// an illegal override. Both need every module of the program to be loaded
+/// at once (a single `Module` only knows its own `super_class` *index*, not
+/// whether the class it names is `FINAL`), unlike `nl_bytecode::Module::
+/// validate`'s single-module invariants (also run here, once per module,
+/// so a program built in memory by `nl-codegen` — see `nl-test-runner`,
+/// which never round-trips through `encode`/`decode` — gets the same
+/// enforcement `Module::decode` already gives a `.nlm` loaded from disk).
+pub fn verify_link(modules: &[Module]) -> Result<(), VmError> {
+    let by_name: HashMap<&str, &Module> = modules
+        .iter()
+        .filter_map(|m| m.this_class_name().map(|name| (name, m)))
+        .collect();
+
+    for module in modules {
+        module.validate()?;
+
+        let Some(name) = module.this_class_name() else {
+            continue;
+        };
+
+        if module.super_class != 0 {
+            let super_name = module
+                .constant_pool
+                .class_name_at(module.super_class)
+                .ok_or(VmError::Malformed("bad super_class index"))?;
+            if by_name
+                .get(super_name)
+                .is_some_and(|s| s.class_flags & class_flags::FINAL != 0)
+            {
+                return Err(VmError::Link(format!(
+                    "class '{name}' cannot extend final class '{super_name}'"
+                )));
+            }
+        }
+
+        // For each of this module's own methods, walk up the `extends`
+        // chain looking for the nearest ancestor declaring the same
+        // name+descriptor — the same "nearest wins" resolution virtual
+        // dispatch itself uses (`resolve_virtual`/`find_method_by_
+        // descriptor`). If that nearest declaration is `FINAL`, this
+        // method illegally overrides it; if it isn't, further ancestors
+        // don't matter (they're already shadowed by the nearer one, so
+        // they don't own the vtable slot this method occupies).
+        for m in &module.methods {
+            if m.flags & (method_flags::CONSTRUCTOR | method_flags::DESTRUCTOR) != 0 {
+                continue;
+            }
+            let (Some(method_name), Some(descriptor)) = (
+                module.constant_pool.utf8_at(m.name_index),
+                module.constant_pool.type_desc_at(m.descriptor_index),
+            ) else {
+                continue;
+            };
+
+            let mut ancestor = module
+                .constant_pool
+                .class_name_at(module.super_class)
+                .and_then(|n| by_name.get(n).copied());
+            while let Some(anc) = ancestor {
+                if let Some(anc_method) = anc.find_method_by_descriptor(method_name, descriptor) {
+                    if anc_method.flags & method_flags::FINAL != 0 {
+                        let anc_name = anc.this_class_name().unwrap_or("?");
+                        return Err(VmError::Link(format!(
+                            "method '{method_name}' in class '{name}' overrides final method declared in '{anc_name}'"
+                        )));
+                    }
+                    break;
+                }
+                ancestor = anc
+                    .constant_pool
+                    .class_name_at(anc.super_class)
+                    .and_then(|n| by_name.get(n).copied());
+            }
+        }
+    }
+    Ok(())
+}
+
 pub struct RunOutcome {
     pub exit_code: i32,
     /// Everything written via `system.Out.print`/`println` (see `crate::native`).
@@ -362,6 +444,17 @@ pub struct RunOutcome {
 /// `join()` itself before returning from `main`, as every home-grown test
 /// in this phase does.
 pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
+    // vm.md § Class flag bits / § Method descriptor — whole-program
+    // structural checks, run once before anything (not even `<clinit>`)
+    // executes, exactly like the "link time" wording in the spec implies.
+    if let Err(e) = verify_link(modules) {
+        return RunOutcome {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: format!("{e}"),
+        };
+    }
+
     let program = Arc::new(Program::new(modules.to_vec()));
 
     // vm.md § Program startup happens after every class's `static` storage

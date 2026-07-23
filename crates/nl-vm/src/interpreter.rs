@@ -464,6 +464,21 @@ fn exec_step(
                 *pc_ref = pc;
                 return Ok(Step::Continue);
             }
+            // vm.md § Class flag bits, `ABSTRACT`: "The VM must reject `NEW`
+            // targeting a class with this flag ... if reached at runtime,
+            // the VM aborts execution with an error." `nl_vm::program::
+            // verify_link` already runs once at load time, but doesn't
+            // (and can't, without a full bytecode verifier scanning every
+            // `NEW` target ahead of time — see IMPLEMENTATION_STATUS.md §
+            // VM / bytecode) prove a given `NEW` is unreachable; this is
+            // the actual enforcement point once execution gets here.
+            if program
+                .get(&fqcn)
+                .is_some_and(|m| m.class_flags & class_flags::ABSTRACT != 0)
+            {
+                return Err(VmError::InstantiateAbstractClass(fqcn));
+            }
+
             // Fields are collected across the whole `extends` chain (a
             // subclass's own fields, if any, take precedence over a
             // same-named ancestor field) so an inherited field like

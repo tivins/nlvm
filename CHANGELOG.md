@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.1]
+
+### Fixed
+- The bytecode `ABSTRACT`/`FINAL` flags (`class_flags`/`method_flags`) are now actually emitted by the compiler and enforced by the VM, closing a gap where they were defined in the module format but never written or checked. An abstract method (interface methods included) is now compiled to a proper code-less stub (`code_length = 0`, no locals/stack/exception/line table) instead of being silently omitted from the module; `abstract`/`final` classes and `final` methods now carry their flag in the compiled bytecode. Loading a module now rejects one with `ABSTRACT`+`FINAL` set together (class or method) or an abstract method with non-empty code — previously undetected malformed bytecode. Loading a program now also rejects a class extending a `final` class or overriding a `final` method, and instantiating an `abstract` class is rejected at runtime as a VM-level safety net — protections that previously existed only at compile time (E032/E035/E036) and gave no defense for a hand-written or corrupted `.nlm`.
+
 ## [0.12.0]
 
 ### Added

@@ -22,6 +22,24 @@ pub enum VmError {
     Unsupported(String),
     #[error("malformed bytecode: {0}")]
     Malformed(&'static str),
+    /// vm.md § Class flag bits / § Method descriptor — a whole-program,
+    /// cross-module structural check failed: a `super_class` names a
+    /// class flagged `FINAL`, or a method overrides an ancestor's `FINAL`
+    /// method. See `program::verify_link`, run once at program load
+    /// (before `main`), distinct from `Malformed` (`nl_bytecode::Module::
+    /// validate`'s single-module invariants) since this needs the whole
+    /// linked module set to detect, not just one module's own bytes.
+    #[error("link error: {0}")]
+    Link(String),
+    /// vm.md line 160: "The VM must reject `NEW` targeting a class with
+    /// this flag ... if reached at runtime, the VM aborts execution with
+    /// an error." This project has no static bytecode verifier that scans
+    /// every `NEW` target ahead of time (see IMPLEMENTATION_STATUS.md § VM
+    /// / bytecode — linear dispatch, no vtable), so the "reached at
+    /// runtime" fallback is the actual enforcement point: `Opcode::New`
+    /// raises this the moment it would instantiate an `ABSTRACT` class.
+    #[error("cannot instantiate abstract class '{0}'")]
+    InstantiateAbstractClass(String),
     /// `system.ps.Process.exit(code)` (stdlib.md: "Terminal statement: does
     /// not return"). Unwinds the call stack exactly like `Thrown` (`?`
     /// propagates it through `call_static`/`call_instance` the same way),
