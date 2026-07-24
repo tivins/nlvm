@@ -1204,11 +1204,12 @@ fn exception_constructor_chain_depth(program: &Arc<Program>, class_fqcn: &str) -
 fn build_stack_trace_array(skip: usize) -> Value {
     let points: Vec<Value> = crate::call_stack::snapshot(skip)
         .into_iter()
-        .map(|(class_fqcn, _method_name, line)| {
+        .map(|(class_fqcn, method_name, line)| {
             let mut fields = HashMap::new();
             let file = format!("{}.nl", class_fqcn.replace('.', "/"));
             fields.insert("file".to_string(), Value::Str(Arc::new(file)));
             fields.insert("line".to_string(), Value::Int(line as i64));
+            fields.insert("methodName".to_string(), Value::Str(Arc::new(method_name)));
             Value::Object(Arc::new(Mutex::new(Object::native(
                 "ExecutionPoint",
                 fields,

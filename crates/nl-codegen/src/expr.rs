@@ -1008,6 +1008,15 @@ impl<'a> Emitter<'a> {
                     ret
                 }
                 nl_syntax::ast::ClosureBody::Expr(e) => {
+                    // vm.md § Method descriptor (line-number table) — an
+                    // expression body has no `Stmt` of its own to trigger
+                    // `record_line` (that only happens in `stmt::compile_stmt`),
+                    // so without this the `invoke` method's `line_table` stays
+                    // empty and its stack trace frames always report line 0.
+                    // `self.last_line` is the closure literal's enclosing
+                    // statement's line — the best available proxy, since
+                    // `Expr` carries no source position of its own.
+                    inner.record_line(self.last_line);
                     let value_ty = inner.compile_expr(e)?;
                     inner.op(Opcode::ReturnValue, 0);
                     match return_type {

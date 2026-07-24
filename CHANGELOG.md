@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0]
+
+### Added
+- `Exception.stackTrace` entries (`ExecutionPoint`) now carry a `methodName` field alongside `file`/`line`, populated from the VM's shadow call stack — an nlvm extension beyond specs.md's `{line, file}`. See [issue #13](https://github.com/nlvm-lang/nlvm/issues/13).
+
+### Fixed
+- An expression-body closure (`() => expr`, as opposed to a block-body `() => { ... }`) now records a line-number table entry for its `invoke` method. Previously it had none at all, so any stack trace frame pointing into such a closure always reported line `0`. See [issue #13](https://github.com/nlvm-lang/nlvm/issues/13).
+
 ## [0.13.0]
 
 ### Added

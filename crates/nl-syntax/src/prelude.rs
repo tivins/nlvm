@@ -116,6 +116,11 @@ pub fn files() -> Vec<SourceFile> {
 /// built-in exceptions bypass `Exception`'s own); declared as a real class
 /// purely so `Exception.stackTrace: ExecutionPoint[]` is a type nl-sema and
 /// nl-codegen can resolve like any other object array.
+///
+/// `methodName` is an nlvm extension beyond specs.md's `{line, file}` (issue
+/// #13) — populated from `call_stack::FrameInfo::method_name`, which was
+/// already tracked for `set_current_line`'s own bookkeeping but never
+/// surfaced to NL code.
 fn execution_point_class() -> ClassDecl {
     let fields = vec![
         FieldDecl {
@@ -136,6 +141,15 @@ fn execution_point_class() -> ClassDecl {
             ty: Type::Int,
             init: None,
         },
+        FieldDecl {
+            name: "methodName".to_string(),
+            visibility: Visibility::Public,
+            visibility_explicit: true,
+            is_static: false,
+            readonly: false,
+            ty: Type::StringT,
+            init: None,
+        },
     ];
     let params = vec![
         Param {
@@ -148,6 +162,13 @@ fn execution_point_class() -> ClassDecl {
         Param {
             name: "line".to_string(),
             ty: Type::Int,
+            is_const: false,
+            default: None,
+            is_ref: false,
+        },
+        Param {
+            name: "methodName".to_string(),
+            ty: Type::StringT,
             is_const: false,
             default: None,
             is_ref: false,
@@ -165,6 +186,13 @@ fn execution_point_class() -> ClassDecl {
             kind: StmtKind::Expr(Expr::Assign(
                 LValue::Field(Box::new(Expr::This), "line".to_string()),
                 Box::new(Expr::Ident("line".to_string())),
+            )),
+            line: 0,
+        },
+        Stmt {
+            kind: StmtKind::Expr(Expr::Assign(
+                LValue::Field(Box::new(Expr::This), "methodName".to_string()),
+                Box::new(Expr::Ident("methodName".to_string())),
             )),
             line: 0,
         },

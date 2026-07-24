@@ -1,0 +1,31 @@
+---
+title: "ExecutionPoint.methodName (issue #13) is populated per stack trace frame from the call stack"
+file_separator: "#NLFILE"
+expected_exit_code: 0
+expected_stdout: "2 boom main"
+---
+
+#NLFILE phase20/stacktracemethodname/Helper.nl
+namespace phase20.stacktracemethodname;
+class Helper {
+	public static void boom() {
+		throw new IllegalArgumentException("bad");
+	}
+}
+
+#NLFILE phase20/stacktracemethodname/Main.nl
+namespace phase20.stacktracemethodname;
+class Main {
+	public static int main(string[] args) {
+		try {
+			Helper.boom();
+		} catch (IllegalArgumentException e) {
+			system.Out.print(system.Int.toString(e.stackTrace.length()));
+			system.Out.print(" ");
+			system.Out.print(e.stackTrace[0].methodName);
+			system.Out.print(" ");
+			system.Out.print(e.stackTrace[1].methodName);
+		}
+		return 0;
+	}
+}
