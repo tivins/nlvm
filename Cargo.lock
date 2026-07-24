@@ -125,7 +125,7 @@ checksum = "68ab91017fe16c622486840e4c83c9a37afeff978bd239b5293d61ece587de66"
 
 [[package]]
 name = "nl-bytecode"
-version = "0.12.5"
+version = "0.13.0"
 dependencies = [
  "sha2",
  "thiserror",
@@ -133,7 +133,7 @@ dependencies = [
 
 [[package]]
 name = "nl-codegen"
-version = "0.12.5"
+version = "0.13.0"
 dependencies = [
  "nl-bytecode",
  "nl-syntax",
@@ -142,7 +142,7 @@ dependencies = [
 
 [[package]]
 name = "nl-sema"
-version = "0.12.5"
+version = "0.13.0"
 dependencies = [
  "nl-syntax",
  "thiserror",
@@ -150,14 +150,14 @@ dependencies = [
 
 [[package]]
 name = "nl-syntax"
-version = "0.12.5"
+version = "0.13.0"
 dependencies = [
  "thiserror",
 ]
 
 [[package]]
 name = "nl-test-runner"
-version = "0.12.5"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "nl-bytecode",
@@ -171,7 +171,7 @@ dependencies = [
 
 [[package]]
 name = "nl-vm"
-version = "0.12.5"
+version = "0.13.0"
 dependencies = [
  "nl-bytecode",
  "nl-codegen",
@@ -183,7 +183,7 @@ dependencies = [
 
 [[package]]
 name = "nlc"
-version = "0.12.5"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "nl-bytecode",
@@ -194,7 +194,7 @@ dependencies = [
 
 [[package]]
 name = "nlvm"
-version = "0.12.5"
+version = "0.13.0"
 dependencies = [
  "anyhow",
  "nl-bytecode",

@@ -12,7 +12,7 @@ pub mod value;
 
 pub use error::VmError;
 pub use nl_bytecode::Module;
-pub use program::{run_program, verify_link, RunOutcome};
+pub use program::{run_program, run_program_with_stdin, verify_link, RunOutcome};
 pub use value::Value;
 
 pub fn load_module(bytes: &[u8]) -> Result<Module, VmError> {

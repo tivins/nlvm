@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0]
+
+### Added
+- `system.In.readLine` now has test coverage: the internal test-runner YAML format gained a `stdin` header key that scripts stdin input line-by-line (EOF once exhausted), so a *run* test can exercise `readLine` without a real pipe. `nl_vm::run_program_with_stdin` backs this — `run_program` itself is unchanged and still reads the real process stdin. See [issue #6](https://github.com/nlvm-lang/nlvm/issues/6).
+
 ## [0.12.5]
 
 ### Fixed

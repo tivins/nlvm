@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::BufRead;
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 
@@ -89,6 +90,14 @@ pub struct Program {
     /// explicitly through `call_static`/`call_instance`/`run_frame`.
     stdout: Mutex<String>,
     stderr: Mutex<String>,
+    /// Source for `system.In.readLine` (see `crate::native`). The real
+    /// process stdin by default (`run_program`); `run_program_with_stdin`
+    /// substitutes an in-memory buffer instead, which is what lets
+    /// `nl-test-runner` script `system.In.readLine` in a YAML fixture
+    /// without a real pipe (see `Header::stdin`) — the previous state was
+    /// that `native::dispatch` called `std::io::stdin()` directly, which
+    /// made `readLine` untestable in-process (nlvm issue #6).
+    stdin: Mutex<Box<dyn BufRead + Send>>,
     /// Open files backing `system.io.FileHandle` objects (see
     /// `crate::native`): a handle object only carries an index into this
     /// table, and `close()` clears the slot (making the index permanently
@@ -125,7 +134,10 @@ pub struct Program {
 }
 
 impl Program {
-    pub fn new(modules: Vec<Module>) -> Self {
+    /// `stdin_data` is `None` to read the real process stdin (the
+    /// `run_program` entry point), or `Some(bytes)` to serve `readLine`
+    /// calls from an in-memory script instead (`run_program_with_stdin`).
+    pub fn new(modules: Vec<Module>, stdin_data: Option<Vec<u8>>) -> Self {
         let mut map = HashMap::with_capacity(modules.len());
         let mut load_order = Vec::with_capacity(modules.len());
         let mut statics: HashMap<String, HashMap<String, Value>> = HashMap::new();
@@ -150,12 +162,17 @@ impl Program {
                 map.insert(name.to_string(), module);
             }
         }
+        let stdin: Box<dyn BufRead + Send> = match stdin_data {
+            Some(bytes) => Box::new(std::io::Cursor::new(bytes)),
+            None => Box::new(std::io::BufReader::new(std::io::stdin())),
+        };
         Program {
             modules: map,
             load_order,
             statics: Mutex::new(statics),
             stdout: Mutex::new(String::new()),
             stderr: Mutex::new(String::new()),
+            stdin: Mutex::new(stdin),
             file_handles: Mutex::new(Vec::new()),
             tcp_listeners: Mutex::new(Vec::new()),
             tcp_streams: Mutex::new(Vec::new()),
@@ -211,6 +228,22 @@ impl Program {
 
     pub fn write_stderr(&self, s: &str) {
         lock(&self.stderr).push_str(s);
+    }
+
+    /// `system.In.readLine` (stdlib.md): one line from `stdin`, CRLF/LF
+    /// trailing newline stripped, `None` on EOF with nothing read.
+    pub fn read_stdin_line(&self) -> std::io::Result<Option<String>> {
+        let mut line = String::new();
+        if lock(&self.stdin).read_line(&mut line)? == 0 {
+            return Ok(None);
+        }
+        if line.ends_with('\n') {
+            line.pop();
+            if line.ends_with('\r') {
+                line.pop();
+            }
+        }
+        Ok(Some(line))
     }
 
     pub fn register_file(&self, file: std::fs::File) -> i64 {
@@ -462,6 +495,26 @@ pub struct RunOutcome {
 /// `join()` itself before returning from `main`, as every home-grown test
 /// in this phase does.
 pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
+    run_program_impl(modules, program_args, None)
+}
+
+/// Same as `run_program`, but `system.In.readLine` reads from `stdin_data`
+/// instead of the real process stdin — lets a caller (`nl-test-runner`'s
+/// `Header::stdin`, see nlvm issue #6) script scanner input without a real
+/// pipe.
+pub fn run_program_with_stdin(
+    modules: &[Module],
+    program_args: &[String],
+    stdin_data: &str,
+) -> RunOutcome {
+    run_program_impl(modules, program_args, Some(stdin_data.as_bytes().to_vec()))
+}
+
+fn run_program_impl(
+    modules: &[Module],
+    program_args: &[String],
+    stdin_data: Option<Vec<u8>>,
+) -> RunOutcome {
     // vm.md § Class flag bits / § Method descriptor — whole-program
     // structural checks, run once before anything (not even `<clinit>`)
     // executes, exactly like the "link time" wording in the spec implies.
@@ -473,7 +526,7 @@ pub fn run_program(modules: &[Module], program_args: &[String]) -> RunOutcome {
         };
     }
 
-    let program = Arc::new(Program::new(modules.to_vec()));
+    let program = Arc::new(Program::new(modules.to_vec(), stdin_data));
 
     // vm.md § Program startup happens after every class's `static` storage
     // is in place — see `run_static_initializers`'s doc comment for why

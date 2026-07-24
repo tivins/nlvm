@@ -22,6 +22,14 @@ pub struct Header {
     /// among its diagnostics. Compilation must still succeed — a warning
     /// never fails the build (compiler.md § Warnings).
     pub expected_warning: Option<String>,
+    /// nlvm-internal extension, not part of nlvm-specs/docs/tests.md: scripts
+    /// `system.In.readLine`'s input for a *run* test. Each `readLine` call
+    /// consumes one line (LF, `\r` stripped like the real native does); once
+    /// exhausted, further calls see EOF (`null`) rather than falling through
+    /// to the real process stdin — see `nl_vm::run_program_with_stdin`.
+    /// Absent means the program runs against the real stdin, same as before
+    /// this key existed (nlvm issue #6).
+    pub stdin: Option<String>,
     pub expected_class: Option<String>,
     pub expected_methods: Option<Vec<String>>,
     pub expected_fields: Option<Vec<serde_yaml::Value>>,

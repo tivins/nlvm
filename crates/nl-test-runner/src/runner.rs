@@ -82,7 +82,10 @@ pub fn run_test(test: &TestFile) -> Outcome {
         return Outcome::Fail("no module with 'main' found after codegen".to_string());
     }
 
-    let run_outcome = nl_vm::run_program(&modules, &[]);
+    let run_outcome = match &test.header.stdin {
+        Some(input) => nl_vm::run_program_with_stdin(&modules, &[], input),
+        None => nl_vm::run_program(&modules, &[]),
+    };
 
     if let Some(expected) = test.header.expected_exit_code {
         if run_outcome.exit_code != expected {

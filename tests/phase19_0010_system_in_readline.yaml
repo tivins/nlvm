@@ -1,0 +1,25 @@
+---
+title: "Phase 19 — system.In.readLine reads scripted stdin, null on EOF"
+file_separator: "#NLFILE"
+stdin: |
+  hello
+  world
+expected_exit_code: 0
+expected_stdout: "hello world null"
+---
+
+#NLFILE phase19/stdin/Main.nl
+namespace phase19.stdin;
+class Main {
+	public static int main(string[] args) {
+		string|null first = system.In.readLine();
+		system.Out.print(first ?? "null");
+		system.Out.print(" ");
+		string|null second = system.In.readLine();
+		system.Out.print(second ?? "null");
+		system.Out.print(" ");
+		string|null third = system.In.readLine();
+		system.Out.print(third ?? "null");
+		return 0;
+	}
+}

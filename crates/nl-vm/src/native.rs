@@ -142,22 +142,11 @@ pub fn dispatch(
             program.write_stderr(&s);
             Ok(None)
         }
-        ("system.In", "readLine") => {
-            let mut line = String::new();
-            match std::io::stdin().read_line(&mut line) {
-                Ok(0) => Ok(Some(Value::Null)), // EOF
-                Ok(_) => {
-                    if line.ends_with('\n') {
-                        line.pop();
-                        if line.ends_with('\r') {
-                            line.pop();
-                        }
-                    }
-                    Ok(Some(Value::Str(Arc::new(line))))
-                }
-                Err(e) => Err(VmError::Io(e)),
-            }
-        }
+        ("system.In", "readLine") => match program.read_stdin_line() {
+            Ok(Some(line)) => Ok(Some(Value::Str(Arc::new(line)))),
+            Ok(None) => Ok(Some(Value::Null)), // EOF
+            Err(e) => Err(VmError::Io(e)),
+        },
         ("system.Int", "parse") => match expect_str(&mut args)?.trim().parse::<i64>() {
             Ok(v) => Ok(Some(Value::Int(v))),
             Err(_) => Err(throw_format_error("invalid int literal")),
