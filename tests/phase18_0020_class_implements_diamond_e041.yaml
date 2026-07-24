@@ -1,0 +1,34 @@
+---
+title: "class implements two unrelated interfaces with a diamond conflict — E041 fires from the class side too, before E033 ever gets a chance to complain about a missing implementation (issue #9)"
+file_separator: "#NLFILE"
+expected_compile_error: "E041"
+---
+
+#NLFILE phase18/diamond0020/Left.nl
+namespace phase18.diamond0020;
+interface Left {
+	public int value();
+}
+
+#NLFILE phase18/diamond0020/Right.nl
+namespace phase18.diamond0020;
+interface Right {
+	public string value();
+}
+
+#NLFILE phase18/diamond0020/Impl.nl
+namespace phase18.diamond0020;
+// No `value()` implementation at all — there is no signature that could
+// satisfy both Left.value():int and Right.value():string at once, so this
+// must be rejected as E041 rather than E033 ("missing implementation").
+class Impl implements Left, Right {
+	public construct() {}
+}
+
+#NLFILE phase18/diamond0020/Main.nl
+namespace phase18.diamond0020;
+class Main {
+	public static int main(string[] args) {
+		return 0;
+	}
+}

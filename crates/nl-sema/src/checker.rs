@@ -44,8 +44,25 @@ pub fn check_source_file(
     classes: &ClassTable,
 ) -> Result<Vec<LocatedWarning>, LocatedError> {
     let SourceItem::Class(class) = &file.item else {
-        // Interfaces declare signatures only — nothing to flow-check yet.
-        return Ok(Vec::new());
+        // Interfaces declare signatures only — nothing to flow-check yet,
+        // except the diamond-merge conflict an interface's own `extends`
+        // clause can introduce among its ancestors (specs.md § Interface
+        // inheritance — E041), which has no other checkpoint since an
+        // interface never reaches `check_method` below.
+        let SourceItem::Interface(iface) = &file.item else {
+            unreachable!("SourceFile::item is only Class or Interface")
+        };
+        let this_fqcn = class_table::fqcn_of(file);
+        return locate(
+            iface.decl_line,
+            check_diamond_interface_merge(classes, &this_fqcn),
+        )
+        .map(|()| Vec::new())
+        .map_err(|(line, error)| LocatedError {
+            file: file.path.clone(),
+            line,
+            error,
+        });
     };
 
     let mut warnings: Vec<(u32, SemaWarning)> = Vec::new();
@@ -59,6 +76,15 @@ pub fn check_source_file(
         locate(
             class.decl_line,
             check_property_initialization(class, &imports),
+        )?;
+        // Runs before E044/E033 below: a diamond conflict is a defect in the
+        // interface hierarchy itself, not in how (or whether) this class
+        // implements it — reporting E033 "missing implementation" first for
+        // a method two parent interfaces can't even agree the return type of
+        // would blame the wrong thing.
+        locate(
+            class.decl_line,
+            check_diamond_interface_merge(classes, &this_fqcn),
         )?;
         locate(
             class.decl_line,
@@ -496,6 +522,55 @@ fn check_const_interface_impl(
                 return Err(SemaError::MethodMustBeConst(
                     impl_method.name.clone(),
                     iface_fqcn.clone(),
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// specs.md § Interface inheritance, "diamond" — E041. Applies to both a
+/// class's `implements` set and an interface's own `extends` set: both are
+/// stored in `ClassInfo::implements` (see `class_table::interface_closure`'s
+/// doc comment), so a single lookup by `this_fqcn` covers either shape. Two
+/// interfaces reachable through that closure may each independently declare
+/// the same method (name + parameter types); they silently merge into one
+/// requirement when they also agree on return type, but disagreeing on
+/// return type is the same error as an ordinary duplicate declaration
+/// (compiler.md § Duplicate definitions), just discovered through the
+/// interface hierarchy instead of within one class's own method list.
+fn check_diamond_interface_merge(classes: &ClassTable, this_fqcn: &str) -> Result<(), SemaError> {
+    let Some(info) = classes.get(this_fqcn) else {
+        return Ok(());
+    };
+    let closure = class_table::interface_closure(classes, &info.implements);
+    // Every (declaring interface, method) pair across the whole closure,
+    // flattened so any two entries can be compared pairwise below regardless
+    // of which interface each came from.
+    let mut all: Vec<(&str, &class_table::MethodInfo)> = Vec::new();
+    for iface_fqcn in &closure {
+        let Some(iface_info) = classes.get(iface_fqcn) else {
+            continue;
+        };
+        all.extend(iface_info.methods.iter().map(|m| (iface_fqcn.as_str(), m)));
+    }
+    for i in 0..all.len() {
+        for j in (i + 1)..all.len() {
+            let (fqcn_a, a) = all[i];
+            let (fqcn_b, b) = all[j];
+            // Two declarations on the *same* interface aren't an inherited
+            // diamond — that's a plain duplicate declaration, out of scope
+            // here (see `check_duplicate_methods`, which this issue leaves
+            // untouched for interfaces).
+            if fqcn_a == fqcn_b || a.name != b.name || a.params != b.params {
+                continue;
+            }
+            if a.return_ty != b.return_ty {
+                return Err(SemaError::DiamondInterfaceConflict(
+                    a.name.clone(),
+                    fqcn_a.to_string(),
+                    fqcn_b.to_string(),
+                    this_fqcn.to_string(),
                 ));
             }
         }

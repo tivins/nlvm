@@ -1,0 +1,37 @@
+---
+title: "interface extends — diamond merge of two parents declaring the identical method (same params and same return type) is not an error, just a merge (issue #9, no false positive)"
+file_separator: "#NLFILE"
+---
+
+#NLFILE phase18/diamond0030/Left.nl
+namespace phase18.diamond0030;
+interface Left {
+	public int value();
+}
+
+#NLFILE phase18/diamond0030/Right.nl
+namespace phase18.diamond0030;
+interface Right {
+	public int value();
+}
+
+#NLFILE phase18/diamond0030/Both.nl
+namespace phase18.diamond0030;
+interface Both extends Left, Right {
+}
+
+#NLFILE phase18/diamond0030/Impl.nl
+namespace phase18.diamond0030;
+class Impl implements Both {
+	public construct() {}
+	public int value() { return 42; }
+}
+
+#NLFILE phase18/diamond0030/Main.nl
+namespace phase18.diamond0030;
+class Main {
+	public static int main(string[] args) {
+		Impl b = new Impl();
+		return b.value() == 42 ? 0 : 1;
+	}
+}

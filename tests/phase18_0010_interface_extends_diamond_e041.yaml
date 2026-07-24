@@ -1,0 +1,24 @@
+---
+title: "interface extends — diamond merge of two parents declaring the same method with different return types is E041 (issue #9)"
+file_separator: "#NLFILE"
+expected_compile_error: "E041"
+---
+
+#NLFILE phase18/diamond0010/Left.nl
+namespace phase18.diamond0010;
+interface Left {
+	public int value();
+}
+
+#NLFILE phase18/diamond0010/Right.nl
+namespace phase18.diamond0010;
+interface Right {
+	public string value();
+}
+
+#NLFILE phase18/diamond0010/Both.nl
+namespace phase18.diamond0010;
+// Left.value() -> int and Right.value() -> string cannot merge: same name
+// and parameter types (none), incompatible return types.
+interface Both extends Left, Right {
+}

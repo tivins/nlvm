@@ -5,6 +5,11 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.5]
+
+### Fixed
+- Diamond merge of inherited interface declarations is now checked (`E041`). Per specs.md § Interface inheritance, when the same method (name + parameter types) is reachable from several interfaces in an `extends`/`implements` closure, the declarations must agree on return type to merge; disagreeing return types is now rejected as `E041`, the same error code as an ordinary duplicate method declaration. Previously an interface extending two parents that each declared, say, `value()` with a different return type — or a class implementing two such unrelated interfaces — compiled successfully with no diagnostic at all. The check runs before `E033`/`E044` so a structurally-conflicting hierarchy is reported for what it is, not misattributed to a missing implementation. See [issue #9](https://github.com/nlvm-lang/nlvm/issues/9).
+
 ## [0.12.4]
 
 ### Fixed

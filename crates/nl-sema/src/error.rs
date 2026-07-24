@@ -20,6 +20,8 @@ pub enum SemaError {
     BadUnaryOperator(String, String),
     #[error("E041 — Duplicate method '{0}' with identical signature in class '{1}'")]
     DuplicateMethod(String, String),
+    #[error("E041 — Method '{0}' is inherited from both '{1}' and '{2}' with different return types (diamond merge in '{3}')")]
+    DiamondInterfaceConflict(String, String, String, String),
     #[error("E042 — Duplicate class definition '{0}'")]
     DuplicateClass(String),
     #[error("E045 — 'this(...)' delegation call must be the first statement of the constructor")]
@@ -122,6 +124,7 @@ impl SemaError {
             SemaError::BadBinaryOperator(_, _, _) => "E009",
             SemaError::BadUnaryOperator(_, _) => "E009",
             SemaError::DuplicateMethod(_, _) => "E041",
+            SemaError::DiamondInterfaceConflict(_, _, _, _) => "E041",
             SemaError::DuplicateClass(_) => "E042",
             SemaError::ThisCallNotFirst => "E045",
             SemaError::DelegationCycle(_) => "E046",
